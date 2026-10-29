@@ -29,7 +29,16 @@ export function useScanJobs() {
       qc.invalidateQueries({ queryKey: ["jobs"] });
       qc.invalidateQueries({ queryKey: ["analytics"] });
       qc.invalidateQueries({ queryKey: ["scan_history"] });
+      qc.invalidateQueries({ queryKey: ["scans"] });
     },
+  });
+}
+
+export function useJobsForScan(scanId: number | null) {
+  return useQuery<Job[]>({
+    queryKey: ["jobs_for_scan", scanId],
+    queryFn: () => invoke<Job[]>("get_jobs_for_scan", { scanId }),
+    enabled: scanId !== null,
   });
 }
 

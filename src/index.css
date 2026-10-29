@@ -1,1 +1,15 @@
 @import "tailwindcss";
+
+.scan-sidebar::-webkit-scrollbar {
+  width: 4px;
+}
+.scan-sidebar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scan-sidebar::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 2px;
+}
+.scan-sidebar::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}

@@ -1,6 +1,9 @@
 use super::*;
 use super::query_builder;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter};
 
 pub struct SourceOrchestrator {
     sources: Vec<Box<dyn JobSource>>,
@@ -77,7 +80,7 @@ impl SourceOrchestrator {
             .get("source_linkedin_enabled")
             .map_or(false, |v| v == "true")
         {
-            sources.push(Box::new(linkedin::LinkedInSource::new()));
+            sources.push(Box::new(linkedin::LinkedInSource::with_settings(settings)));
         }
 
         // Stepstone - scraper
@@ -189,6 +192,85 @@ impl SourceOrchestrator {
         }
         eprintln!("[scan] Scan complete. {} sources processed.", results.len());
         results
+    }
+
+    /// Scan all sources concurrently, emitting progress events as each source completes
+    pub async fn scan_all_concurrent_with_progress(&self, app: &AppHandle) -> Vec<(ScanResult, Vec<RawJobListing>)> {
+        eprintln!("[scan] Starting concurrent scan with {} sources (with progress)", self.sources.len());
+        let total_sources = self.sources.len() as u32;
+        let completed = Arc::new(AtomicU32::new(0));
+
+        let futures: Vec<_> = self
+            .sources
+            .iter()
+            .map(|source| {
+                let name = source.name().to_string();
+                let query = query_builder::build_queries_for_source(&name, &self.settings);
+                let app = app.clone();
+                let completed = completed.clone();
+                eprintln!("[scan] Queuing source: {} with keywords: {:?}", name, query.keywords);
+
+                let _ = app.emit("scan-progress", serde_json::json!({
+                    "stage": "source_start",
+                    "message": format!("Fetching from {}...", name),
+                    "source": name,
+                    "count": serde_json::Value::Null,
+                    "total": total_sources,
+                }));
+
+                async move {
+                    let name = source.name().to_string();
+                    let result = match source.fetch_jobs(&query).await {
+                        Ok(jobs) => {
+                            let count = jobs.len() as u32;
+                            eprintln!("[scan] {} returned {} jobs", name, count);
+                            (
+                                ScanResult {
+                                    source: name.clone(),
+                                    jobs_found: count,
+                                    jobs_new: 0,
+                                    error: None,
+                                },
+                                jobs,
+                            )
+                        }
+                        Err(e) => {
+                            eprintln!("[scan] {} ERROR: {}", name, e);
+                            (
+                                ScanResult {
+                                    source: name.clone(),
+                                    jobs_found: 0,
+                                    jobs_new: 0,
+                                    error: Some(e.to_string()),
+                                },
+                                Vec::new(),
+                            )
+                        }
+                    };
+
+                    let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    let found = result.0.jobs_found;
+                    let err = result.0.error.clone();
+                    let msg = if let Some(ref e) = err {
+                        format!("{}: error - {}", name, e)
+                    } else {
+                        format!("{}: {} jobs found", name, found)
+                    };
+                    let _ = app.emit("scan-progress", serde_json::json!({
+                        "stage": "source_done",
+                        "message": msg,
+                        "source": name,
+                        "count": done,
+                        "total": total_sources,
+                        "detail": format!("{} jobs", found),
+                    }));
+
+                    result
+                }
+            })
+            .collect();
+
+        futures::future::join_all(futures).await
     }
 
     pub fn source_names(&self) -> Vec<String> {

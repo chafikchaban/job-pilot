@@ -1,28 +1,89 @@
 use crate::sources::RawJobListing;
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::time::Duration;
 
 const BATCH_SIZE: usize = 10;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Deserialize a value that might be a string, number, or null into Option<String>.
+fn deserialize_flexible_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let val = serde_json::Value::deserialize(deserializer)?;
+    match val {
+        serde_json::Value::String(s) => Ok(Some(s)),
+        serde_json::Value::Number(n) => Ok(Some(n.to_string())),
+        serde_json::Value::Null => Ok(None),
+        other => Ok(Some(other.to_string())),
+    }
+}
+
+/// Deserialize a value that might be a string array or contain non-strings.
+fn deserialize_flexible_string_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let val = serde_json::Value::deserialize(deserializer)?;
+    match val {
+        serde_json::Value::Array(arr) => Ok(arr
+            .into_iter()
+            .filter_map(|v| match v {
+                serde_json::Value::String(s) => Some(s),
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                serde_json::Value::Null => None,
+                other => Some(other.to_string()),
+            })
+            .collect()),
+        serde_json::Value::Null => Ok(Vec::new()),
+        _ => Ok(Vec::new()),
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParsedJobInfo {
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub core_skills: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub nice_to_have_skills: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub benefits: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub responsibilities: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub interview_process: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_flexible_string")]
     pub salary_range: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_flexible_string")]
     pub seniority_level: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_flexible_string")]
     pub experience_years: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_flexible_string")]
     pub contract_type: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_flexible_string")]
+    pub remote_policy: Option<String>,
+}
+
+/// Deserialize score that might be a number or a string containing a number.
+fn deserialize_flexible_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let val = serde_json::Value::deserialize(deserializer)?;
+    match val {
+        serde_json::Value::Number(n) => Ok(n.as_u64().unwrap_or(50) as u32),
+        serde_json::Value::String(s) => Ok(s.parse::<u32>().unwrap_or(50)),
+        _ => Ok(50),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiJobScore {
     pub index: usize,
+    #[serde(deserialize_with = "deserialize_flexible_u32")]
     pub score: u32,
+    #[serde(default)]
     pub reason: String,
     pub parsed_info: Option<ParsedJobInfo>,
 }
@@ -145,14 +206,9 @@ pub async fn evaluate_jobs(
 
     let passed_count = all_scored.iter().filter(|(_, s, _, _)| *s >= threshold).count();
 
-    // Only keep jobs above threshold
-    let scored_jobs: Vec<(RawJobListing, u32, String, Option<String>)> = all_scored
-        .into_iter()
-        .filter(|(_, score, _, _)| *score >= threshold)
-        .collect();
-
+    // Return ALL scored jobs (caller decides what to do with scores)
     Ok(AiFilterResult {
-        scored_jobs,
+        scored_jobs: all_scored,
         total_evaluated: total,
         passed_count,
     })
@@ -297,8 +353,14 @@ async fn evaluate_batch(
 
     // Extract JSON array from response (handle markdown code blocks)
     let json_str = extract_json_array(text);
-    let scores: Vec<AiJobScore> = serde_json::from_str(&json_str)
-        .unwrap_or_default();
+    let scores: Vec<AiJobScore> = match serde_json::from_str(&json_str) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[ai_filter] Failed to parse AI response: {}", e);
+            eprintln!("[ai_filter] Raw JSON: {}", &json_str[..json_str.len().min(500)]);
+            return Err(format!("Failed to parse AI response: {}", e).into());
+        }
+    };
 
     Ok(scores)
 }
@@ -365,9 +427,15 @@ For each job:
    - seniority_level: Junior/Mid/Senior/Lead/Staff/Principal (null if unclear)
    - experience_years: e.g. "3-5 years" (null if not mentioned)
    - contract_type: Full-time/Part-time/Contract/Freelance (null if not mentioned)
+   - remote_policy: Classify carefully as "remote", "hybrid", or "onsite":
+     - "remote" = fully remote / 100% remote / remote-first
+     - "hybrid" = any flexible/partial remote arrangement. This includes German phrases like "Flexibles Arbeiten (Remote)", "Homeoffice möglich", "remote möglich", "teilweise remote", "flexible Arbeitsmodelle", "mobiles Arbeiten". If a job mentions remote as a benefit or perk, it is at least "hybrid".
+     - "onsite" = ONLY if explicitly stated as office-only / "vor Ort" / "Präsenzpflicht" / no remote mentioned at all
+     - null = no information available
+     IMPORTANT: Many German job listings describe remote work as a benefit (e.g. "Flexibles Arbeiten (Remote)"). Do NOT classify these as "onsite". When in doubt between hybrid and onsite, prefer "hybrid".
 
 Return ONLY a JSON array, no other text:
-[{{"index": 0, "score": 85, "reason": "Strong React/TS match, remote in Germany", "parsed_info": {{"core_skills": ["React", "TypeScript"], "nice_to_have_skills": ["GraphQL"], "benefits": ["Remote work", "30 days PTO"], "responsibilities": ["Build frontend features"], "interview_process": [], "salary_range": null, "seniority_level": "Senior", "experience_years": "5+ years", "contract_type": "Full-time"}}}}, ...]
+[{{"index": 0, "score": 85, "reason": "Strong React/TS match, remote in Germany", "parsed_info": {{"core_skills": ["React", "TypeScript"], "nice_to_have_skills": ["GraphQL"], "benefits": ["Remote work", "30 days PTO"], "responsibilities": ["Build frontend features"], "interview_process": [], "salary_range": null, "seniority_level": "Senior", "experience_years": "5+ years", "contract_type": "Full-time", "remote_policy": "hybrid"}}}}, ...]
 
 If a job has no description, set parsed_info to null."#,
         profile.target_roles.join(", "),
@@ -417,9 +485,10 @@ For each job, extract:
 - seniority_level: Junior/Mid/Senior/Lead/Staff/Principal (null if unclear)
 - experience_years: e.g. "3-5 years" (null if not mentioned)
 - contract_type: Full-time/Part-time/Contract/Freelance (null if not mentioned)
+- remote_policy: "remote" (fully remote), "hybrid" (any flexible/partial remote — includes German phrases like "Flexibles Arbeiten (Remote)", "Homeoffice möglich", "mobiles Arbeiten"), or "onsite" (explicitly office-only). When remote is mentioned as a benefit/perk, classify as "hybrid" at minimum. null if no info.
 
 Return ONLY a JSON array:
-[{{"index": 0, "parsed_info": {{"core_skills": [...], "nice_to_have_skills": [...], "benefits": [...], "responsibilities": [...], "interview_process": [], "salary_range": null, "seniority_level": "Senior", "experience_years": "5+ years", "contract_type": "Full-time"}}}}, ...]"#,
+[{{"index": 0, "parsed_info": {{"core_skills": [...], "nice_to_have_skills": [...], "benefits": [...], "responsibilities": [...], "interview_process": [], "salary_range": null, "seniority_level": "Senior", "experience_years": "5+ years", "contract_type": "Full-time", "remote_policy": "hybrid"}}}}, ...]"#,
         jobs_text,
     )
 }

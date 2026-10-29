@@ -19,14 +19,34 @@ pub fn build_queries_for_source(
         .and_then(|v| serde_json::from_str(v).ok())
         .unwrap_or_else(|| vec!["Germany".into()]);
 
+    let date_range_days = settings
+        .get("posted_since")
+        .and_then(|v| match v.as_str() {
+            "24h" => Some(1),
+            "3d" => Some(3),
+            "1w" => Some(7),
+            "2w" => Some(14),
+            "1m" => Some(30),
+            "3m" => Some(90),
+            "6m" => Some(180),
+            _ => None,
+        })
+        .or(Some(7)); // default to 1 week
+
+    let language = settings
+        .get("languages")
+        .and_then(|v| {
+            // Stored as comma-separated: "en,de" or "en"
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .find(|s| !s.is_empty())
+        });
+
     let base_query = SearchQuery {
         location: regions.first().cloned(),
         remote_policy: settings.get("preferred_remote_policy").cloned(),
-        date_range_days: Some(7),
-        language: settings
-            .get("languages")
-            .and_then(|v| serde_json::from_str::<Vec<String>>(v).ok())
-            .and_then(|v| v.first().cloned()),
+        date_range_days,
+        language,
         page: 1,
         per_page: 25,
         keywords: Vec::new(),

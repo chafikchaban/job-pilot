@@ -20,10 +20,31 @@ async function readStdin() {
   return JSON.parse(Buffer.concat(chunks).toString("utf-8"));
 }
 
-function detectRemotePolicy(title, location) {
+function detectRemotePolicy(title, location, description) {
   const text = `${title} ${location}`.toLowerCase();
-  if (text.includes("remote") || text.includes("homeoffice")) return "remote";
+  if (text.includes("100% remote") || text.includes("fully remote") || text.includes("full remote")) return "remote";
+  if (text.includes("remote") || text.includes("homeoffice") || text.includes("home office")) return "remote";
   if (text.includes("hybrid") || text.includes("teilweise remote")) return "hybrid";
+
+  // Check description for remote policy signals
+  if (description) {
+    const desc = description.toLowerCase();
+    // Strong remote signals
+    if (desc.includes("100% remote") || desc.includes("fully remote") || desc.includes("full remote")) return "remote";
+    if (desc.includes("remote-first") || desc.includes("remote first")) return "remote";
+    // Hybrid signals
+    if (desc.includes("hybrid") || desc.includes("teilweise remote") || desc.includes("teilweise homeoffice")) return "hybrid";
+    // Days-per-week patterns like "2-3 days in office", "3 Tage vor Ort"
+    if (/\d+\s*(days?|tage?)\s*(per week|pro woche|in.{0,10}(office|büro))/i.test(desc)) return "hybrid";
+    if (/\d+\s*(days?|tage?)\s*(remote|homeoffice|home.office)/i.test(desc)) return "hybrid";
+    // Weaker remote signals (only if in a relevant context)
+    if (desc.includes("remote möglich") || desc.includes("remote possible") || desc.includes("remote option")) return "hybrid";
+    if (desc.includes("homeoffice möglich") || desc.includes("home office möglich") || desc.includes("homeoffice option")) return "hybrid";
+    if (desc.includes("flexibles arbeiten") || desc.includes("mobiles arbeiten") || desc.includes("flexible arbeitsmodelle")) return "hybrid";
+    // On-site signals
+    if (desc.includes("vor ort") || desc.includes("on-site only") || desc.includes("office-based") || desc.includes("präsenzpflicht")) return "onsite";
+  }
+
   return null;
 }
 
@@ -114,7 +135,9 @@ async function scrapeStepstone(input) {
     await sleep(SEARCH_DELAY_MS);
 
     // Accept cookies if banner appears
-    const cookieBtn = await browserPage.$('[data-testid="uc-accept-all-button"]');
+    const cookieBtn =
+      (await browserPage.$('[data-testid="uc-accept-all-button"]')) ||
+      (await browserPage.$('button:has-text("Alles akzeptieren")'));
     if (cookieBtn) {
       await cookieBtn.click();
       await sleep(1000);
@@ -122,11 +145,11 @@ async function scrapeStepstone(input) {
 
     // Wait for job listings
     await browserPage
-      .waitForSelector('[data-testid="job-item"], article[class*="job"]', { timeout: 10000 })
+      .waitForSelector('[data-testid="job-item"]', { timeout: 10000 })
       .catch(() => null);
 
     // Extract job data from DOM
-    const cardEls = await browserPage.$$('[data-testid="job-item"], article[class*="job"]');
+    const cardEls = await browserPage.$$('[data-testid="job-item"]');
     log(`Found ${cardEls.length} job cards`);
     const jobs = [];
 
@@ -136,47 +159,45 @@ async function scrapeStepstone(input) {
         (await card.$("h2 a")) ||
         (await card.$("a[data-at*='title']"));
       const companyEl =
-        (await card.$('[data-testid="job-item-company"]')) ||
+        (await card.$('[data-at="job-item-company-name"]')) ||
         (await card.$("[class*='company']"));
       const locationEl =
-        (await card.$('[data-testid="job-item-location"]')) ||
+        (await card.$('[data-at="job-item-location"]')) ||
         (await card.$("[class*='location']"));
 
       const title = titleEl ? (await titleEl.textContent()).trim() : "";
       const company = companyEl ? (await companyEl.textContent()).trim() : null;
       const loc = locationEl ? (await locationEl.textContent()).trim() : null;
 
-      // Try to get posting date from card
+      // Try to get posting date from card — <time datetime="..."> has ISO date
       let postedAt = null;
-      const dateEl =
-        (await card.$('[data-testid="job-item-date"]')) ||
-        (await card.$("[class*='date']")) ||
-        (await card.$("time"));
-      if (dateEl) {
-        // Try datetime attribute first
-        const dt = await dateEl.getAttribute("datetime");
+      const timeEl = await card.$("time[datetime]");
+      if (timeEl) {
+        const dt = await timeEl.getAttribute("datetime");
         if (dt) {
-          postedAt = dt;
-        } else {
+          postedAt = dt.split("T")[0]; // Extract YYYY-MM-DD from ISO datetime
+        }
+      }
+      if (!postedAt) {
+        const dateEl = await card.$("time");
+        if (dateEl) {
           const dateText = await dateEl.textContent().then((t) => t.trim());
           postedAt = parseGermanDate(dateText);
         }
       }
 
-      // Find the link
+      // Find the link — title element is an <a> tag with href
       let href = "";
-      const linkEl = await card.$("a[href*='/stellenangebote']");
-      if (linkEl) {
-        href = (await linkEl.getAttribute("href")) || "";
-      } else if (titleEl) {
+      if (titleEl) {
         const tag = await titleEl.evaluate((el) => el.tagName);
         if (tag === "A") {
           href = (await titleEl.getAttribute("href")) || "";
-        } else {
-          const parentLink = await titleEl.$("xpath=ancestor::a");
-          if (parentLink) {
-            href = (await parentLink.getAttribute("href")) || "";
-          }
+        }
+      }
+      if (!href) {
+        const linkEl = await card.$("a[href*='/stellenangebote'], a[href*='/job/']");
+        if (linkEl) {
+          href = (await linkEl.getAttribute("href")) || "";
         }
       }
 
@@ -211,7 +232,9 @@ async function scrapeStepstone(input) {
         await sleep(800);
 
         // Accept cookies again if banner re-appears
-        const cookieBtn2 = await browserPage.$('[data-testid="uc-accept-all-button"]');
+        const cookieBtn2 =
+          (await browserPage.$('[data-testid="uc-accept-all-button"]')) ||
+          (await browserPage.$('button:has-text("Alles akzeptieren")'));
         if (cookieBtn2) {
           await cookieBtn2.click().catch(() => {});
           await sleep(500);
@@ -261,19 +284,69 @@ async function scrapeStepstone(input) {
           }
         }
 
-        // Extract contract type / job metadata from detail page
+        // Extract structured metadata from detail page header
         let contractType = null;
-        const metaEls = await browserPage.$$('[data-testid="job-ad-detail"], [class*="job-ad-detail"] li, [class*="listing-tag"]');
+        let remotePolicy = null;
+        let salary = null;
+
+        // Stepstone shows metadata as icon+text pairs in the header
+        // Selectors: data-testid attributes, or li elements in the header area
+        const metaSelectors = [
+          '[data-testid="job-ad-detail"]',
+          '[class*="job-ad-detail"] li',
+          '[class*="listing-tag"]',
+          '[data-testid="job-ad-header"] li',
+          '[class*="at-listing__list-icons"] li',
+          '[class*="at-listing__list-icons_work-type"]',
+        ];
+        const metaEls = [];
+        for (const sel of metaSelectors) {
+          const els = await browserPage.$$(sel);
+          metaEls.push(...els);
+        }
+
+        // Also grab all text from the header area for broader matching
+        let headerMeta = "";
+        const headerEl = await browserPage.$('[data-testid="job-ad-header"], [class*="job-ad-header"], [class*="listing-header"]');
+        if (headerEl) {
+          headerMeta = await headerEl.textContent().then((t) => t.trim().toLowerCase());
+        }
+
         for (const el of metaEls) {
           const text = await el.textContent().then((t) => t.trim().toLowerCase());
+          // Contract type
           if (text.includes("vollzeit") || text.includes("full-time")) contractType = "Full-time";
           else if (text.includes("teilzeit") || text.includes("part-time")) contractType = "Part-time";
           else if (text.includes("freelance") || text.includes("freiberuf")) contractType = "Freelance";
+          // Remote policy from structured metadata
+          if (text.includes("homeoffice möglich") || text.includes("home office möglich") || text.includes("remote möglich")) remotePolicy = "hybrid";
+          if (text.includes("homeoffice") || text.includes("home office") || text.includes("mobiles arbeiten") || text.includes("flexibles arbeiten")) {
+            if (!remotePolicy) remotePolicy = "hybrid";
+          }
+          if (text.includes("100% remote") || text.includes("fully remote") || text.includes("remote-first")) remotePolicy = "remote";
+          // Salary
+          if (text.includes("€") || text.includes("eur") || text.includes("gehalt") || text.includes("salary")) {
+            if (!salary) salary = await el.textContent().then((t) => t.trim());
+          }
         }
 
-        if (description && contractType) {
-          description = `${contractType}\n\n${description}`;
+        // Fallback: check header text for remote signals
+        if (!remotePolicy && headerMeta) {
+          if (headerMeta.includes("homeoffice möglich") || headerMeta.includes("home office möglich") || headerMeta.includes("remote möglich")) remotePolicy = "hybrid";
+          else if (headerMeta.includes("homeoffice") || headerMeta.includes("home office") || headerMeta.includes("mobiles arbeiten")) remotePolicy = "hybrid";
+          else if (headerMeta.includes("100% remote") || headerMeta.includes("fully remote")) remotePolicy = "remote";
         }
+
+        // Prepend metadata to description for downstream extraction
+        const metaParts = [];
+        if (contractType) metaParts.push(contractType);
+        if (remotePolicy) metaParts.push(`Remote: ${remotePolicy}`);
+        if (salary) metaParts.push(`Salary: ${salary}`);
+        if (description && metaParts.length > 0) {
+          description = `${metaParts.join(" | ")}\n\n${description}`;
+        }
+
+        j.remote_policy_meta = remotePolicy;
 
         // Extract apply URL
         let applyUrl = null;
@@ -296,7 +369,7 @@ async function scrapeStepstone(input) {
       title: j.title,
       company: j.company,
       location: j.location,
-      remote_policy: detectRemotePolicy(j.title, j.location || ""),
+      remote_policy: j.remote_policy_meta || detectRemotePolicy(j.title, j.location || "", j.description || ""),
       description: j.description || null,
       url: j.url,
       apply_url: j.apply_url || null,

@@ -102,6 +102,12 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
     if !columns.iter().any(|c| c == "parsed_info") {
         conn.execute("ALTER TABLE jobs ADD COLUMN parsed_info TEXT", [])?;
     }
+    if !columns.iter().any(|c| c == "scan_id") {
+        conn.execute(
+            "ALTER TABLE jobs ADD COLUMN scan_id INTEGER REFERENCES scans(id)",
+            [],
+        )?;
+    }
 
     // Add scan_id column to scan_log (idempotent)
     let scan_log_columns: Vec<String> = conn
@@ -150,6 +156,9 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
         ("source_linkedin_enabled", "true"),
         ("source_stepstone_enabled", "true"),
         ("source_brave_search_enabled", "false"),
+        ("linkedin_max_pages", "3"),
+        ("stepstone_max_pages", "3"),
+        ("custom_scraper_boards", "[]"),
         ("ai_filter_enabled", "true"),
         ("ai_filter_threshold", "40"),
         ("mcp_server_enabled", "false"),

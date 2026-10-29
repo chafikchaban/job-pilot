@@ -82,6 +82,13 @@ pub fn resolve_script_path(script_name: &str) -> PathBuf {
     project_root.join("scripts").join(script_name)
 }
 
+/// Get the app data directory for storing session files etc.
+pub fn app_data_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("com.jobpilot.app")
+}
+
 /// Build a shared HTTP client with proper User-Agent header.
 /// Some APIs (The Muse, Remotive) return 403 without a User-Agent.
 pub fn http_client() -> reqwest::Client {

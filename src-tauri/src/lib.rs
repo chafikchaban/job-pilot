@@ -41,6 +41,12 @@ pub fn run() {
             commands::jobs::scan_jobs,
             commands::jobs::get_jobs,
             commands::jobs::get_job,
+            commands::jobs::linkedin_login,
+            commands::jobs::linkedin_login_status,
+            commands::jobs::linkedin_logout,
+            commands::jobs::scraper_login,
+            commands::jobs::scraper_login_status,
+            commands::jobs::scraper_logout,
             // Applications
             commands::applications::create_application,
             commands::applications::get_applications,
@@ -62,6 +68,8 @@ pub fn run() {
             commands::scheduler::get_scheduler_status,
             commands::scheduler::get_scan_history,
             commands::scheduler::get_scans,
+            commands::scheduler::get_jobs_for_scan,
+            commands::scheduler::clear_scans,
             // Web Search
             commands::web_search::run_web_search,
             // Export & Analytics

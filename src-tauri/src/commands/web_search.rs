@@ -71,7 +71,7 @@ pub async fn run_web_search(
     let mut errors = Vec::new();
 
     for job in &results {
-        match jobs::insert_job(&db.conn, job) {
+        match jobs::insert_job(&db.conn, job, None) {
             Ok(true) => new_count += 1,
             Ok(false) => {}
             Err(e) => errors.push(e.to_string()),

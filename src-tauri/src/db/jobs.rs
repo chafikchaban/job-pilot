@@ -23,6 +23,7 @@ pub struct JobRow {
     pub match_reason: Option<String>,
     pub ai_scored: Option<i32>,
     pub parsed_info: Option<String>,
+    pub scan_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -65,11 +66,11 @@ pub struct ScanSession {
 }
 
 /// Insert a job, returns true if new (inserted), false if duplicate (skipped)
-pub fn insert_job(conn: &Connection, job: &RawJobListing) -> Result<bool, rusqlite::Error> {
+pub fn insert_job(conn: &Connection, job: &RawJobListing, scan_id: Option<i64>) -> Result<bool, rusqlite::Error> {
     let hash = job.dedup_hash();
     let result = conn.execute(
-        "INSERT OR IGNORE INTO jobs (title, company, location, remote_policy, description, url, apply_url, source, language, posted_at, dedup_hash, raw_json, fetched_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, CURRENT_TIMESTAMP)",
+        "INSERT OR IGNORE INTO jobs (title, company, location, remote_policy, description, url, apply_url, source, language, posted_at, dedup_hash, raw_json, fetched_at, scan_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, CURRENT_TIMESTAMP, ?13)",
         params![
             job.title,
             job.company,
@@ -83,6 +84,7 @@ pub fn insert_job(conn: &Connection, job: &RawJobListing) -> Result<bool, rusqli
             job.posted_at,
             hash,
             job.raw_json,
+            scan_id,
         ],
     )?;
     Ok(result > 0)
@@ -95,11 +97,12 @@ pub fn insert_job_with_score(
     score: f64,
     match_reason: Option<&str>,
     parsed_info: Option<&str>,
+    scan_id: Option<i64>,
 ) -> Result<bool, rusqlite::Error> {
     let hash = job.dedup_hash();
     let result = conn.execute(
-        "INSERT OR IGNORE INTO jobs (title, company, location, remote_policy, description, url, apply_url, source, language, posted_at, dedup_hash, raw_json, fetched_at, relevance_score, match_reason, ai_scored, parsed_info)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, CURRENT_TIMESTAMP, ?13, ?14, 1, ?15)",
+        "INSERT OR IGNORE INTO jobs (title, company, location, remote_policy, description, url, apply_url, source, language, posted_at, dedup_hash, raw_json, fetched_at, relevance_score, match_reason, ai_scored, parsed_info, scan_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, CURRENT_TIMESTAMP, ?13, ?14, 1, ?15, ?16)",
         params![
             job.title,
             job.company,
@@ -116,6 +119,7 @@ pub fn insert_job_with_score(
             score,
             match_reason,
             parsed_info,
+            scan_id,
         ],
     )?;
     Ok(result > 0)
@@ -234,7 +238,7 @@ pub fn get_jobs(
 
     // Data query
     let data_sql = format!(
-        "SELECT id, title, company, location, remote_policy, description, url, apply_url, source, language, german_level_required, posted_at, fetched_at, relevance_score, dedup_hash, match_reason, ai_scored, parsed_info
+        "SELECT id, title, company, location, remote_policy, description, url, apply_url, source, language, german_level_required, posted_at, fetched_at, relevance_score, dedup_hash, match_reason, ai_scored, parsed_info, scan_id
          FROM jobs {} ORDER BY {} {} LIMIT {} OFFSET {}",
         where_sql, sort, order, per_page, offset
     );
@@ -263,6 +267,7 @@ pub fn get_jobs(
                 match_reason: row.get(15)?,
                 ai_scored: row.get(16)?,
                 parsed_info: row.get(17)?,
+                scan_id: row.get(18)?,
             })
         })?
         .filter_map(|r| r.ok())
@@ -273,7 +278,7 @@ pub fn get_jobs(
 
 pub fn get_job_by_id(conn: &Connection, id: i64) -> Result<Option<JobRow>, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, company, location, remote_policy, description, url, apply_url, source, language, german_level_required, posted_at, fetched_at, relevance_score, dedup_hash, match_reason, ai_scored, parsed_info
+        "SELECT id, title, company, location, remote_policy, description, url, apply_url, source, language, german_level_required, posted_at, fetched_at, relevance_score, dedup_hash, match_reason, ai_scored, parsed_info, scan_id
          FROM jobs WHERE id = ?1",
     )?;
     stmt.query_row(params![id], |row| {
@@ -296,6 +301,7 @@ pub fn get_job_by_id(conn: &Connection, id: i64) -> Result<Option<JobRow>, rusql
             match_reason: row.get(15)?,
             ai_scored: row.get(16)?,
             parsed_info: row.get(17)?,
+            scan_id: row.get(18)?,
         })
     })
     .optional()
@@ -437,7 +443,49 @@ pub fn get_scans(conn: &Connection, limit: u32) -> Result<Vec<ScanSession>, rusq
     Ok(result)
 }
 
+pub fn get_jobs_by_scan_id(conn: &Connection, scan_id: i64) -> Result<Vec<JobRow>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, company, location, remote_policy, description, url, apply_url, source, language, german_level_required, posted_at, fetched_at, relevance_score, dedup_hash, match_reason, ai_scored, parsed_info, scan_id
+         FROM jobs WHERE scan_id = ?1 ORDER BY relevance_score DESC",
+    )?;
+    let rows = stmt
+        .query_map(params![scan_id], |row| {
+            Ok(JobRow {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                company: row.get(2)?,
+                location: row.get(3)?,
+                remote_policy: row.get(4)?,
+                description: row.get(5)?,
+                url: row.get(6)?,
+                apply_url: row.get(7)?,
+                source: row.get(8)?,
+                language: row.get(9)?,
+                german_level_required: row.get(10)?,
+                posted_at: row.get(11)?,
+                fetched_at: row.get(12)?,
+                relevance_score: row.get(13)?,
+                dedup_hash: row.get(14)?,
+                match_reason: row.get(15)?,
+                ai_scored: row.get(16)?,
+                parsed_info: row.get(17)?,
+                scan_id: row.get(18)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+pub fn clear_scans(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute("DELETE FROM scan_log", [])?;
+    conn.execute("DELETE FROM scans", [])?;
+    Ok(())
+}
+
 pub fn delete_all_jobs(conn: &Connection) -> Result<u64, rusqlite::Error> {
+    conn.execute("DELETE FROM applications", [])?;
+    conn.execute("DELETE FROM cover_letters", [])?;
     let count = conn.execute("DELETE FROM jobs", [])?;
     Ok(count as u64)
 }

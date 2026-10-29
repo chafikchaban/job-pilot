@@ -4,11 +4,37 @@ use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-pub struct LinkedInSource;
+pub struct LinkedInSource {
+    browser_data_dir: String,
+    max_pages: u32,
+}
 
 impl LinkedInSource {
     pub fn new() -> Self {
-        Self
+        let browser_data_dir = super::app_data_dir()
+            .join("linkedin_browser")
+            .to_string_lossy()
+            .to_string();
+        Self {
+            browser_data_dir,
+            max_pages: 3,
+        }
+    }
+
+    pub fn with_settings(settings: &std::collections::HashMap<String, String>) -> Self {
+        let browser_data_dir = super::app_data_dir()
+            .join("linkedin_browser")
+            .to_string_lossy()
+            .to_string();
+        let max_pages = settings
+            .get("linkedin_max_pages")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3u32)
+            .min(10);
+        Self {
+            browser_data_dir,
+            max_pages,
+        }
     }
 }
 
@@ -31,8 +57,7 @@ impl JobSource for LinkedInSource {
         let script_path = super::resolve_script_path("linkedin-scraper.js");
         if !script_path.exists() {
             return Err(
-                "LinkedIn scraper not available: scripts/linkedin-scraper.js not found. \
-                 Install Playwright and set up the scraper scripts to enable LinkedIn scanning."
+                "LinkedIn scraper not available: scripts/linkedin-scraper.js not found."
                     .into(),
             );
         }
@@ -42,6 +67,8 @@ impl JobSource for LinkedInSource {
             "location": query.location,
             "page": query.page,
             "per_page": query.per_page,
+            "browser_data_dir": self.browser_data_dir,
+            "max_pages": self.max_pages,
         });
 
         let mut child = Command::new("node")
@@ -51,11 +78,7 @@ impl JobSource for LinkedInSource {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                format!(
-                    "Failed to start LinkedIn scraper (is Node.js installed?): {}",
-                    e
-                )
-                .into()
+                format!("Failed to start LinkedIn scraper: {}", e).into()
             })?;
 
         if let Some(mut stdin) = child.stdin.take() {
@@ -64,7 +87,6 @@ impl JobSource for LinkedInSource {
                 .await?;
         }
 
-        // Stream stderr in real-time for progress visibility
         let stderr_handle = child.stderr.take();
         let stderr_task = tokio::spawn(async move {
             if let Some(stderr) = stderr_handle {
@@ -84,12 +106,11 @@ impl JobSource for LinkedInSource {
         });
 
         let output = tokio::time::timeout(
-            std::time::Duration::from_secs(300),
+            std::time::Duration::from_secs(600), // 10 min for multi-page
             child.wait_with_output(),
         )
         .await??;
 
-        // Wait for stderr streaming to finish
         let _ = stderr_task.await;
 
         if !output.status.success() {

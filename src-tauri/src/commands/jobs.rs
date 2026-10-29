@@ -5,7 +5,7 @@ use crate::sources::RawJobListing;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SourceResult {
@@ -28,6 +28,27 @@ pub struct ScanSummary {
 pub struct JobsPage {
     pub jobs: Vec<JobRow>,
     pub total: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanProgress {
+    pub stage: String,
+    pub message: String,
+    pub detail: Option<String>,
+    pub source: Option<String>,
+    pub count: Option<u32>,
+    pub total: Option<u32>,
+}
+
+fn emit_progress(app: &AppHandle, stage: &str, message: &str, detail: Option<&str>, source: Option<&str>, count: Option<u32>, total: Option<u32>) {
+    let _ = app.emit("scan-progress", ScanProgress {
+        stage: stage.into(),
+        message: message.into(),
+        detail: detail.map(Into::into),
+        source: source.map(Into::into),
+        count,
+        total,
+    });
 }
 
 fn load_settings_map(state: &State<AppState>) -> Result<HashMap<String, String>, String> {
@@ -82,11 +103,14 @@ fn load_resume_data(state: &State<AppState>) -> (Vec<String>, String) {
 
 #[tauri::command]
 pub async fn scan_jobs(
+    app: AppHandle,
     state: State<'_, AppState>,
     sources: Option<Vec<String>>,
 ) -> Result<ScanSummary, String> {
     let _ = sources;
     let settings = load_settings_map(&state)?;
+
+    emit_progress(&app, "init", "Initializing scan...", None, None, None, None);
 
     // Create scan session
     let scan_id = {
@@ -95,9 +119,18 @@ pub async fn scan_jobs(
     };
 
     let orchestrator = SourceOrchestrator::new(&settings);
+    let source_names = orchestrator.source_names();
+    let source_count = source_names.len() as u32;
 
-    // Fetch from all sources concurrently with per-source optimized queries
-    let results = orchestrator.scan_all_concurrent().await;
+    emit_progress(
+        &app, "fetching",
+        &format!("Fetching jobs from {} sources...", source_count),
+        Some(&source_names.join(", ")),
+        None, None, Some(source_count),
+    );
+
+    // Fetch from all sources concurrently with per-source events
+    let results = orchestrator.scan_all_concurrent_with_progress(&app).await;
 
     let mut total_found: u32 = 0;
     let mut errors: Vec<String> = Vec::new();
@@ -114,12 +147,18 @@ pub async fn scan_jobs(
         source_results.push(SourceResult {
             source: scan_result.source.clone(),
             found: scan_result.jobs_found,
-            new: 0, // Will be updated after pipeline
+            new: 0,
             error: scan_result.error.clone(),
         });
 
         all_jobs.extend(job_listings.iter().cloned());
     }
+
+    emit_progress(
+        &app, "fetched",
+        &format!("{} jobs fetched from {} sources", total_found, source_count),
+        None, None, Some(total_found), Some(source_count),
+    );
 
     // Load resume data for filtering
     let (skills, experience_summary) = load_resume_data(&state);
@@ -134,9 +173,17 @@ pub async fn scan_jobs(
     let pipeline_config =
         PipelineConfig::from_settings(&settings, skills, experience_summary, existing_hashes);
 
-    // Run the filtering pipeline
+    emit_progress(&app, "filtering", "Running filtering pipeline...", None, None, Some(total_found), None);
+
+    // Run the filtering pipeline with progress
     let (scored_jobs, mut pipeline_stats) =
-        pipeline::run_pipeline(all_jobs, &pipeline_config).await;
+        pipeline::run_pipeline_with_progress(all_jobs, &pipeline_config, &app).await;
+
+    emit_progress(
+        &app, "inserting",
+        &format!("Inserting {} jobs into database...", scored_jobs.len()),
+        None, None, Some(scored_jobs.len() as u32), None,
+    );
 
     // Insert surviving jobs into DB
     let db = state.db.lock().map_err(|e| e.to_string())?;
@@ -150,15 +197,15 @@ pub async fn scan_jobs(
                 scored_job.score,
                 scored_job.match_reason.as_deref(),
                 scored_job.parsed_info.as_deref(),
+                Some(scan_id),
             )
         } else {
-            jobs::insert_job(&db.conn, &scored_job.job)
+            jobs::insert_job(&db.conn, &scored_job.job, Some(scan_id))
         };
 
         match inserted {
             Ok(true) => {
                 new_inserted += 1;
-                // Update per-source counts
                 if let Some(sr) = source_results
                     .iter_mut()
                     .find(|sr| sr.source == scored_job.job.source)
@@ -166,7 +213,7 @@ pub async fn scan_jobs(
                     sr.new += 1;
                 }
             }
-            Ok(false) => {} // Duplicate
+            Ok(false) => {}
             Err(e) => {
                 errors.push(format!("Insert error: {}", e));
             }
@@ -211,9 +258,17 @@ pub async fn scan_jobs(
     )
     .ok();
 
+    emit_progress(&app, "scoring", "Running rule-based scoring...", None, None, None, None);
+
     // Score unscored jobs (for those inserted without AI score)
     drop(db);
     score_unscored_jobs(&state).ok();
+
+    emit_progress(
+        &app, "done",
+        &format!("Scan complete! {} new jobs inserted", new_inserted),
+        None, None, Some(new_inserted), Some(total_found),
+    );
 
     Ok(ScanSummary {
         total_found,
@@ -283,7 +338,7 @@ fn score_unscored_jobs(state: &State<AppState>) -> Result<u32, String> {
     // Only score jobs not yet scored by AI
     let mut stmt = db
         .conn
-        .prepare("SELECT id, title, company, location, remote_policy, description, url, apply_url, source, language, german_level_required, posted_at, fetched_at, relevance_score, dedup_hash, match_reason, ai_scored, parsed_info FROM jobs WHERE (ai_scored = 0 OR ai_scored IS NULL) AND (relevance_score = 0.0 OR relevance_score IS NULL)")
+        .prepare("SELECT id, title, company, location, remote_policy, description, url, apply_url, source, language, german_level_required, posted_at, fetched_at, relevance_score, dedup_hash, match_reason, ai_scored, parsed_info, scan_id FROM jobs WHERE (ai_scored = 0 OR ai_scored IS NULL) AND (relevance_score = 0.0 OR relevance_score IS NULL)")
         .map_err(|e| e.to_string())?;
     let unscored: Vec<JobRow> = stmt
         .query_map([], |row| {
@@ -306,6 +361,7 @@ fn score_unscored_jobs(state: &State<AppState>) -> Result<u32, String> {
                 match_reason: row.get(15)?,
                 ai_scored: row.get(16)?,
                 parsed_info: row.get(17)?,
+                scan_id: row.get(18)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -338,4 +394,131 @@ pub fn get_job(state: State<AppState>, id: i64) -> Result<JobRow, String> {
     jobs::get_job_by_id(&db.conn, id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Job not found".into())
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct LinkedInLoginStatus {
+    pub logged_in: bool,
+}
+
+// ── Legacy LinkedIn-specific commands (delegate to generic) ──
+
+#[tauri::command]
+pub async fn linkedin_login() -> Result<String, String> {
+    scraper_login("linkedin".into(), "https://www.linkedin.com/login".into()).await
+}
+
+#[tauri::command]
+pub fn linkedin_login_status() -> Result<LinkedInLoginStatus, String> {
+    let status = scraper_login_status("linkedin".into())?;
+    Ok(LinkedInLoginStatus {
+        logged_in: status.logged_in,
+    })
+}
+
+#[tauri::command]
+pub fn linkedin_logout() -> Result<String, String> {
+    scraper_logout("linkedin".into())?;
+    // Also clean up legacy session file
+    let legacy = crate::sources::app_data_dir().join("linkedin_session.json");
+    if legacy.exists() {
+        let _ = std::fs::remove_file(&legacy);
+    }
+    Ok("Logged out. Session removed.".into())
+}
+
+// ── Generic scraper login commands ──
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ScraperLoginStatus {
+    pub logged_in: bool,
+}
+
+fn browser_data_dir_for(site: &str) -> std::path::PathBuf {
+    // Sanitize site name for use as directory name
+    let safe_name = site
+        .to_lowercase()
+        .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_");
+    crate::sources::app_data_dir().join(format!("{}_browser", safe_name))
+}
+
+#[tauri::command]
+pub async fn scraper_login(site: String, login_url: String) -> Result<String, String> {
+    let script_path = crate::sources::resolve_script_path("site-login.js");
+    if !script_path.exists() {
+        return Err("Site login script not found.".into());
+    }
+
+    let browser_data_dir = browser_data_dir_for(&site);
+    std::fs::create_dir_all(&browser_data_dir).map_err(|e| e.to_string())?;
+
+    let input = serde_json::json!({
+        "browserDataDir": browser_data_dir.to_string_lossy(),
+        "loginUrl": login_url,
+        "siteName": site,
+    });
+
+    let mut child = tokio::process::Command::new("node")
+        .arg(&script_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to start login script: {}", e))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        stdin
+            .write_all(serde_json::to_string(&input).unwrap().as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    let stderr_handle = child.stderr.take();
+    let stderr_task = tokio::spawn(async move {
+        if let Some(stderr) = stderr_handle {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                eprintln!("{}", line);
+            }
+        }
+    });
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(200),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| "Login timed out".to_string())?
+    .map_err(|e| e.to_string())?;
+
+    let _ = stderr_task.await;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Login failed: {}", stderr));
+    }
+
+    Ok("Login successful! Session saved.".into())
+}
+
+#[tauri::command]
+pub fn scraper_login_status(site: String) -> Result<ScraperLoginStatus, String> {
+    let browser_data_dir = browser_data_dir_for(&site);
+    let logged_in = browser_data_dir.is_dir()
+        && std::fs::read_dir(&browser_data_dir)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
+    Ok(ScraperLoginStatus { logged_in })
+}
+
+#[tauri::command]
+pub fn scraper_logout(site: String) -> Result<String, String> {
+    let browser_data_dir = browser_data_dir_for(&site);
+    if browser_data_dir.exists() {
+        std::fs::remove_dir_all(&browser_data_dir).map_err(|e| e.to_string())?;
+    }
+    Ok("Logged out. Session removed.".into())
 }

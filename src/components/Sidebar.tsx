@@ -1,21 +1,18 @@
 import { NavLink } from "react-router-dom";
 import {
-  LayoutDashboard,
   Briefcase,
   ClipboardList,
   FileText,
   Mail,
-  History,
   Settings,
+  Radar,
 } from "lucide-react";
 
 const navItems = [
-  { to: "/", icon: LayoutDashboard, label: "Dashboard" },
-  { to: "/jobs", icon: Briefcase, label: "Jobs" },
+  { to: "/", icon: Radar, label: "Scan" },
   { to: "/applications", icon: ClipboardList, label: "Applications" },
   { to: "/resume", icon: FileText, label: "Resume" },
   { to: "/cover-letters", icon: Mail, label: "Cover Letters" },
-  { to: "/scans", icon: History, label: "Scans" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ];
 

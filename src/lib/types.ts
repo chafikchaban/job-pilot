@@ -31,6 +31,7 @@ export const JobSchema = z.object({
   match_reason: z.string().nullable().optional(),
   ai_scored: z.number().nullable().optional(),
   parsed_info: z.string().nullable().optional(),
+  scan_id: z.number().nullable().optional(),
 });
 export type Job = z.infer<typeof JobSchema>;
 
