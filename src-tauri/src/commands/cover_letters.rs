@@ -84,10 +84,12 @@ pub async fn generate_cover_letter(
             languages: Vec::new(),
         });
 
-    let prompt =
-        crate::cover_letter::prompt::build_prompt(&parsed, &job, &language, &tone, &style);
+    let system_prompt =
+        crate::cover_letter::prompt::build_system_prompt(&language, &tone, &style);
+    let user_prompt =
+        crate::cover_letter::prompt::build_user_prompt(&parsed, &job);
 
-    let content = crate::cover_letter::generator::generate(&api_key, &prompt)
+    let content = crate::cover_letter::generator::generate(&api_key, &system_prompt, &user_prompt)
         .await
         .map_err(|e| e.to_string())?;
 

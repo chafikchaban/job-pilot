@@ -13,7 +13,7 @@ export function useUploadResume() {
   const qc = useQueryClient();
   return useMutation<ResumeData, string, string>({
     mutationFn: (filePath) =>
-      invoke<ResumeData>("upload_resume", { file_path: filePath }),
+      invoke<ResumeData>("upload_resume", { filePath }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["resume"] });
     },
@@ -38,7 +38,7 @@ export function useUpdateResumeParsed() {
     { parsedJson: string; targetRoles: string }
   >({
     mutationFn: ({ parsedJson, targetRoles }) =>
-      invoke("update_resume_parsed", { parsed_json: parsedJson, target_roles: targetRoles }),
+      invoke("update_resume_parsed", { parsedJson, targetRoles }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["resume"] });
     },

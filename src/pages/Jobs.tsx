@@ -11,9 +11,13 @@ import {
   Calendar,
   ChevronLeft,
   ChevronRight,
+  FileText,
+  Loader2,
+  Check,
 } from "lucide-react";
 import { useJobs, useScanJobs } from "../hooks/useJobs";
 import { useResume } from "../hooks/useResume";
+import { useGenerateCoverLetter } from "../hooks/useCoverLetters";
 import { JobDetailModal } from "../components/JobDetailModal";
 import { formatPostedDate } from "../lib/job-parser";
 import { openExternal } from "../lib/tauri";
@@ -33,7 +37,7 @@ export function Jobs() {
   const [selectedSources, setSelectedSources] = useState<string[]>([]);
   const [remotePolicies, setRemotePolicies] = useState<string[]>([]);
   const [minRelevance, setMinRelevance] = useState(0);
-  const [sortBy, setSortBy] = useState("relevance_score");
+  const [sortBy, setSortBy] = useState("posted_at");
   const [page, setPage] = useState(1);
   const [viewMode, setViewMode] = useState<"card" | "table">("card");
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
@@ -52,6 +56,29 @@ export function Jobs() {
   const { data: jobs = [], isLoading } = useJobs(filters);
   const scan = useScanJobs();
   const { data: resume } = useResume();
+  const generate = useGenerateCoverLetter();
+  const [generatingJobId, setGeneratingJobId] = useState<number | null>(null);
+  const [generatedJobIds, setGeneratedJobIds] = useState<Set<number>>(new Set());
+  const [generateError, setGenerateError] = useState<string | null>(null);
+
+  const handleGenerate = (jobId: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setGeneratingJobId(jobId);
+    setGenerateError(null);
+    generate.mutate(
+      { jobId, language: "en", tone: "professional" },
+      {
+        onSuccess: () => {
+          setGeneratedJobIds((prev) => new Set(prev).add(jobId));
+          setGeneratingJobId(null);
+        },
+        onError: (err) => {
+          setGeneratingJobId(null);
+          setGenerateError(String(err));
+        },
+      }
+    );
+  };
 
   const userSkills = useMemo(() => {
     if (!resume?.parsed_json) return [];
@@ -91,6 +118,13 @@ export function Jobs() {
       {scan.isSuccess && (
         <div className="rounded-lg bg-green-50 p-3 text-sm text-green-800">
           Scan complete: {scan.data.total_found} found, {scan.data.new_inserted} new.
+        </div>
+      )}
+
+      {generateError && (
+        <div className="flex items-center justify-between rounded-lg bg-red-50 p-3 text-sm text-red-800">
+          <span>Cover letter generation failed: {generateError}</span>
+          <button onClick={() => setGenerateError(null)} className="ml-2 font-medium hover:underline">Dismiss</button>
         </div>
       )}
 
@@ -185,11 +219,24 @@ export function Jobs() {
       ) : viewMode === "card" ? (
         <div className="grid grid-cols-2 gap-4">
           {jobs.map((job) => (
-            <JobCard key={job.id} job={job} onClick={() => setSelectedJob(job)} />
+            <JobCard
+              key={job.id}
+              job={job}
+              onClick={() => setSelectedJob(job)}
+              onGenerate={handleGenerate}
+              isGenerating={generatingJobId === job.id}
+              isGenerated={generatedJobIds.has(job.id)}
+            />
           ))}
         </div>
       ) : (
-        <JobTable jobs={jobs} onSelect={setSelectedJob} />
+        <JobTable
+          jobs={jobs}
+          onSelect={setSelectedJob}
+          onGenerate={handleGenerate}
+          generatingJobId={generatingJobId}
+          generatedJobIds={generatedJobIds}
+        />
       )}
 
       {jobs.length === 0 && !isLoading && (
@@ -227,7 +274,19 @@ export function Jobs() {
   );
 }
 
-function JobCard({ job, onClick }: { job: Job; onClick: () => void }) {
+function JobCard({
+  job,
+  onClick,
+  onGenerate,
+  isGenerating,
+  isGenerated,
+}: {
+  job: Job;
+  onClick: () => void;
+  onGenerate: (jobId: number, e: React.MouseEvent) => void;
+  isGenerating: boolean;
+  isGenerated: boolean;
+}) {
   const score = job.relevance_score ?? 0;
   const posted = formatPostedDate(job.posted_at);
   return (
@@ -266,17 +325,48 @@ function JobCard({ job, onClick }: { job: Job; onClick: () => void }) {
       {!job.match_reason && job.description && (
         <p className="mb-3 line-clamp-2 text-xs text-gray-500">{job.description}</p>
       )}
-      <button
-        onClick={(e) => { e.stopPropagation(); openExternal(job.url); }}
-        className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:underline"
-      >
-        View Listing <ExternalLink className="h-3 w-3" />
-      </button>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={(e) => { e.stopPropagation(); openExternal(job.url); }}
+          className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:underline"
+        >
+          View Listing <ExternalLink className="h-3 w-3" />
+        </button>
+        <button
+          onClick={(e) => onGenerate(job.id, e)}
+          disabled={isGenerating}
+          className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition ${
+            isGenerated
+              ? "bg-green-50 text-green-600"
+              : "bg-purple-50 text-purple-600 hover:bg-purple-100"
+          } disabled:opacity-50`}
+        >
+          {isGenerating ? (
+            <><Loader2 className="h-3 w-3 animate-spin" /> Generating...</>
+          ) : isGenerated ? (
+            <><Check className="h-3 w-3" /> Generated</>
+          ) : (
+            <><FileText className="h-3 w-3" /> Cover Letter</>
+          )}
+        </button>
+      </div>
     </div>
   );
 }
 
-function JobTable({ jobs, onSelect }: { jobs: Job[]; onSelect: (job: Job) => void }) {
+function JobTable({
+  jobs,
+  onSelect,
+  onGenerate,
+  generatingJobId,
+  generatedJobIds,
+}: {
+  jobs: Job[];
+  onSelect: (job: Job) => void;
+  onGenerate: (jobId: number, e: React.MouseEvent) => void;
+  generatingJobId: number | null;
+  generatedJobIds: Set<number>;
+}) {
   return (
     <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
       <table className="w-full text-sm">
@@ -289,12 +379,15 @@ function JobTable({ jobs, onSelect }: { jobs: Job[]; onSelect: (job: Job) => voi
             <th className="px-4 py-2 font-medium">Remote</th>
             <th className="px-4 py-2 font-medium">Source</th>
             <th className="px-4 py-2 font-medium">Score</th>
+            <th className="px-4 py-2 font-medium">Cover</th>
             <th className="px-4 py-2 font-medium">Link</th>
           </tr>
         </thead>
         <tbody>
           {jobs.map((job) => {
             const posted = formatPostedDate(job.posted_at);
+            const isGenerating = generatingJobId === job.id;
+            const isGenerated = generatedJobIds.has(job.id);
             return (
               <tr
                 key={job.id}
@@ -317,6 +410,25 @@ function JobTable({ jobs, onSelect }: { jobs: Job[]; onSelect: (job: Job) => voi
                 <td className="px-4 py-2">{job.remote_policy ?? "--"}</td>
                 <td className="px-4 py-2">{job.source}</td>
                 <td className="px-4 py-2">{(job.relevance_score ?? 0).toFixed(0)}%</td>
+                <td className="px-4 py-2">
+                  <button
+                    onClick={(e) => onGenerate(job.id, e)}
+                    disabled={isGenerating}
+                    className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition ${
+                      isGenerated
+                        ? "bg-green-50 text-green-600"
+                        : "bg-purple-50 text-purple-600 hover:bg-purple-100"
+                    } disabled:opacity-50`}
+                  >
+                    {isGenerating ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : isGenerated ? (
+                      <><Check className="h-3 w-3" /> Done</>
+                    ) : (
+                      <><FileText className="h-3 w-3" /> Generate</>
+                    )}
+                  </button>
+                </td>
                 <td className="px-4 py-2">
                   <button
                     onClick={(e) => { e.stopPropagation(); openExternal(job.url); }}
