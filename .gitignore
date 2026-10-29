@@ -7,4 +7,8 @@ src-tauri/target/
 *.log
 .planning/
 PLAN.md
-.playwright-mcp
+
+.playwright-mcp/
+.claude/
+.env
+.env.*
