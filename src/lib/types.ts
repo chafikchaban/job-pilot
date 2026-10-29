@@ -28,8 +28,23 @@ export const JobSchema = z.object({
   posted_at: z.string().nullable(),
   fetched_at: z.string().nullable(),
   relevance_score: z.number().nullable(),
+  match_reason: z.string().nullable().optional(),
+  ai_scored: z.number().nullable().optional(),
+  parsed_info: z.string().nullable().optional(),
 });
 export type Job = z.infer<typeof JobSchema>;
+
+export interface ParsedJobInfo {
+  core_skills: string[];
+  nice_to_have_skills: string[];
+  benefits: string[];
+  responsibilities: string[];
+  interview_process: string[];
+  salary_range: string | null;
+  seniority_level: string | null;
+  experience_years: string | null;
+  contract_type: string | null;
+}
 
 export const ApplicationSchema = z.object({
   id: z.number(),
@@ -68,10 +83,28 @@ export interface JobFilters {
   per_page?: number;
 }
 
+export interface SourceResult {
+  source: string;
+  found: number;
+  new: number;
+  error: string | null;
+}
+
+export interface PipelineStats {
+  fetched: number;
+  deduped: number;
+  prefilter_passed: number;
+  ai_evaluated: number;
+  ai_passed: number;
+  inserted: number;
+}
+
 export interface ScanSummary {
   total_found: number;
   new_inserted: number;
   errors: string[];
+  source_results: SourceResult[];
+  pipeline_stats: PipelineStats | null;
 }
 
 export interface AnalyticsData {
@@ -126,4 +159,16 @@ export interface ScanLogEntry {
   started_at: string;
   completed_at: string | null;
   error: string | null;
+}
+
+export interface ScanSession {
+  id: number;
+  started_at: string;
+  completed_at: string | null;
+  total_found: number;
+  new_inserted: number;
+  pipeline_stats: string | null;
+  errors: string | null;
+  status: "running" | "completed" | "failed";
+  source_results: ScanLogEntry[];
 }

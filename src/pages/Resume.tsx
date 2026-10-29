@@ -12,18 +12,19 @@ import {
   Target,
   Wrench,
 } from "lucide-react";
-import { useResume, useUploadResume, useUpdateResumeParsed } from "../hooks/useResume";
+import { useResume, useUploadResume, useUpdateResumeParsed, useReparseResume } from "../hooks/useResume";
 
 interface ParsedResume {
   skills: string[];
-  experience: { title: string; company: string; period: string }[];
-  education: { degree: string; school: string; year: string }[];
+  experience: { title: string; company: string; duration: string; description?: string }[];
+  education: { degree: string; institution: string; year: string }[];
   languages: { name: string; level: string }[];
 }
 
 export function Resume() {
   const { data: resume, isLoading } = useResume();
   const upload = useUploadResume();
+  const reparse = useReparseResume();
   const updateParsed = useUpdateResumeParsed();
 
   const [parsed, setParsed] = useState<ParsedResume>({
@@ -124,6 +125,23 @@ export function Resume() {
         </span>
       </button>
 
+      {resume?.file_name && (
+        <div className="flex items-center justify-center gap-3">
+          <button
+            onClick={() => reparse.mutate()}
+            disabled={reparse.isPending}
+            className="flex items-center gap-2 rounded-lg border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+          >
+            {reparse.isPending ? (
+              <><Loader2 className="h-4 w-4 animate-spin" /> Parsing with AI...</>
+            ) : (
+              <><Wrench className="h-4 w-4" /> Re-parse Resume with AI</>
+            )}
+          </button>
+          {reparse.isError && <p className="text-sm text-red-500">{String(reparse.error)}</p>}
+          {reparse.isSuccess && <p className="text-sm text-green-600">Parsed successfully!</p>}
+        </div>
+      )}
       {!resume?.parsed_json && !upload.isPending && (
         <p className="text-center text-sm text-gray-400">
           Upload a resume to get started.
@@ -199,7 +217,7 @@ export function Resume() {
             {parsed.experience.map((exp, i) => (
               <div key={i} className="border-b border-gray-100 pb-2 last:border-0">
                 <p className="text-sm font-medium text-gray-800">{exp.title}</p>
-                <p className="text-xs text-gray-500">{exp.company} -- {exp.period}</p>
+                <p className="text-xs text-gray-500">{exp.company} -- {exp.duration}</p>
               </div>
             ))}
           </Section>
@@ -212,7 +230,7 @@ export function Resume() {
             {parsed.education.map((ed, i) => (
               <div key={i} className="border-b border-gray-100 pb-2 last:border-0">
                 <p className="text-sm font-medium text-gray-800">{ed.degree}</p>
-                <p className="text-xs text-gray-500">{ed.school} -- {ed.year}</p>
+                <p className="text-xs text-gray-500">{ed.institution} -- {ed.year}</p>
               </div>
             ))}
           </Section>

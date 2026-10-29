@@ -1,8 +1,10 @@
 use super::*;
+use super::query_builder;
 use std::collections::HashMap;
 
 pub struct SourceOrchestrator {
     sources: Vec<Box<dyn JobSource>>,
+    settings: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -97,16 +99,70 @@ impl SourceOrchestrator {
             }
         }
 
-        Self { sources }
+        Self {
+            sources,
+            settings: settings.clone(),
+        }
     }
 
+    /// Scan all sources concurrently using per-source optimized queries
+    pub async fn scan_all_concurrent(&self) -> Vec<(ScanResult, Vec<RawJobListing>)> {
+        eprintln!("[scan] Starting concurrent scan with {} sources", self.sources.len());
+
+        let futures: Vec<_> = self
+            .sources
+            .iter()
+            .map(|source| {
+                let name = source.name().to_string();
+                let query = query_builder::build_queries_for_source(&name, &self.settings);
+                eprintln!("[scan] Queuing source: {} with keywords: {:?}", name, query.keywords);
+                async move {
+                    let name = source.name().to_string();
+                    match source.fetch_jobs(&query).await {
+                        Ok(jobs) => {
+                            let count = jobs.len() as u32;
+                            eprintln!("[scan] {} returned {} jobs", name, count);
+                            (
+                                ScanResult {
+                                    source: name,
+                                    jobs_found: count,
+                                    jobs_new: 0,
+                                    error: None,
+                                },
+                                jobs,
+                            )
+                        }
+                        Err(e) => {
+                            eprintln!("[scan] {} ERROR: {}", name, e);
+                            (
+                                ScanResult {
+                                    source: name,
+                                    jobs_found: 0,
+                                    jobs_new: 0,
+                                    error: Some(e.to_string()),
+                                },
+                                Vec::new(),
+                            )
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        futures::future::join_all(futures).await
+    }
+
+    /// Legacy sequential scan (kept for compatibility)
     pub async fn scan_all(&self, query: &SearchQuery) -> Vec<(ScanResult, Vec<RawJobListing>)> {
+        eprintln!("[scan] Starting scan with {} sources, keywords: {:?}", self.sources.len(), query.keywords);
         let mut results = Vec::new();
         for source in &self.sources {
             let name = source.name().to_string();
+            eprintln!("[scan] Fetching from source: {}", name);
             match source.fetch_jobs(query).await {
                 Ok(jobs) => {
                     let count = jobs.len() as u32;
+                    eprintln!("[scan] {} returned {} jobs", name, count);
                     results.push((
                         ScanResult {
                             source: name,
@@ -118,6 +174,7 @@ impl SourceOrchestrator {
                     ));
                 }
                 Err(e) => {
+                    eprintln!("[scan] {} ERROR: {}", name, e);
                     results.push((
                         ScanResult {
                             source: name,
@@ -130,6 +187,7 @@ impl SourceOrchestrator {
                 }
             }
         }
+        eprintln!("[scan] Scan complete. {} sources processed.", results.len());
         results
     }
 

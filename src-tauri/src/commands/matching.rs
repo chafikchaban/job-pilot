@@ -58,7 +58,7 @@ pub fn score_all_jobs(state: State<AppState>) -> Result<u32, String> {
 
     let mut stmt = db
         .conn
-        .prepare("SELECT id, title, company, location, remote_policy, description, url, apply_url, source, language, german_level_required, posted_at, fetched_at, relevance_score, dedup_hash FROM jobs WHERE relevance_score = 0.0 OR relevance_score IS NULL")
+        .prepare("SELECT id, title, company, location, remote_policy, description, url, apply_url, source, language, german_level_required, posted_at, fetched_at, relevance_score, dedup_hash, match_reason, ai_scored, parsed_info FROM jobs WHERE relevance_score = 0.0 OR relevance_score IS NULL")
         .map_err(|e| e.to_string())?;
 
     let unscored: Vec<jobs::JobRow> = stmt
@@ -79,6 +79,9 @@ pub fn score_all_jobs(state: State<AppState>) -> Result<u32, String> {
                 fetched_at: row.get(12)?,
                 relevance_score: row.get(13)?,
                 dedup_hash: row.get(14)?,
+                match_reason: row.get(15)?,
+                ai_scored: row.get(16)?,
+                parsed_info: row.get(17)?,
             })
         })
         .map_err(|e| e.to_string())?

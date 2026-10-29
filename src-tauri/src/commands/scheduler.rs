@@ -1,4 +1,4 @@
-use crate::db::jobs;
+use crate::db::jobs::{self, ScanSession};
 use crate::scheduler::SchedulerStatus;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
@@ -105,4 +105,13 @@ pub fn get_scan_history(
             error: r.error,
         })
         .collect())
+}
+
+#[tauri::command]
+pub fn get_scans(
+    state: State<AppState>,
+    limit: Option<u32>,
+) -> Result<Vec<ScanSession>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    jobs::get_scans(&db.conn, limit.unwrap_or(50)).map_err(|e| e.to_string())
 }

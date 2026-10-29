@@ -1,4 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-shell";
+
+export function openExternal(url: string) {
+  open(url).catch((err) => {
+    console.error("Failed to open external URL:", err);
+    window.open(url, "_blank");
+  });
+}
 
 export async function getSetting(key: string): Promise<string | null> {
   return invoke<string | null>("get_setting", { key });

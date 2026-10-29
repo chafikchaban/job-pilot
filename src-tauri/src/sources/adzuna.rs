@@ -38,7 +38,7 @@ impl AdzunaSource {
         Self {
             app_id,
             app_key,
-            client: reqwest::Client::new(),
+            client: super::http_client(),
         }
     }
 }

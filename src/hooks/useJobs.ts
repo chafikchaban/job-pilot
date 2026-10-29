@@ -5,7 +5,10 @@ import type { Job, JobFilters, ScanSummary } from "../lib/types";
 export function useJobs(filters: JobFilters) {
   return useQuery<Job[]>({
     queryKey: ["jobs", filters],
-    queryFn: () => invoke<Job[]>("get_jobs", { filters }),
+    queryFn: async () => {
+      const result = await invoke<{ jobs: Job[]; total: number }>("get_jobs", { filters });
+      return result.jobs;
+    },
   });
 }
 
@@ -29,3 +32,4 @@ export function useScanJobs() {
     },
   });
 }
+

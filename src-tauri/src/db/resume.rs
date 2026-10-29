@@ -55,6 +55,12 @@ pub fn update_resume_parsed(
     Ok(())
 }
 
+pub fn get_resume_raw_file(conn: &Connection, id: i64) -> Result<Option<Vec<u8>>, rusqlite::Error> {
+    let mut stmt = conn.prepare("SELECT raw_file FROM resume WHERE id = ?1")?;
+    stmt.query_row(params![id], |row| row.get::<_, Vec<u8>>(0))
+        .optional()
+}
+
 pub fn delete_resume(conn: &Connection, id: i64) -> Result<(), rusqlite::Error> {
     conn.execute("DELETE FROM resume WHERE id = ?1", params![id])?;
     Ok(())

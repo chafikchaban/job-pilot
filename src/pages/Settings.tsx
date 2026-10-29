@@ -12,24 +12,28 @@ import {
   EyeOff,
   Trash2,
   Download,
+  Sparkles,
 } from "lucide-react";
 import { useSettings, useSaveSetting } from "../hooks/useSettings";
 import { invoke } from "@tauri-apps/api/core";
 
 const API_KEYS = [
-  { key: "ADZUNA_APP_ID", label: "Adzuna App ID" },
-  { key: "ADZUNA_APP_KEY", label: "Adzuna App Key" },
-  { key: "RAPIDAPI_KEY", label: "RapidAPI Key (JSearch)" },
-  { key: "BRAVE_SEARCH_API_KEY", label: "Brave Search API Key" },
-  { key: "ANTHROPIC_API_KEY", label: "Anthropic API Key" },
+  { key: "adzuna_app_id", label: "Adzuna App ID" },
+  { key: "adzuna_app_key", label: "Adzuna App Key" },
+  { key: "rapidapi_key", label: "RapidAPI Key (JSearch)" },
+  { key: "brave_search_api_key", label: "Brave Search API Key" },
+  { key: "anthropic_api_key", label: "Anthropic API Key" },
 ];
 
 const JOB_SOURCES = [
-  { key: "source_adzuna", label: "Adzuna" },
-  { key: "source_jsearch", label: "JSearch (RapidAPI)" },
-  { key: "source_linkedin", label: "LinkedIn (Scraper)" },
-  { key: "source_stepstone", label: "Stepstone.de (Scraper)" },
-  { key: "source_brave", label: "Brave Web Search" },
+  { key: "source_adzuna_enabled", label: "Adzuna" },
+  { key: "source_themuse_enabled", label: "The Muse" },
+  { key: "source_remotive_enabled", label: "Remotive" },
+  { key: "source_arbeitnow_enabled", label: "Arbeitnow" },
+  { key: "source_jsearch_enabled", label: "JSearch (RapidAPI)" },
+  { key: "source_linkedin_enabled", label: "LinkedIn (Scraper)" },
+  { key: "source_stepstone_enabled", label: "Stepstone.de (Scraper)" },
+  { key: "source_brave_search_enabled", label: "Brave Web Search" },
 ];
 
 const REMOTE_OPTS = ["remote", "hybrid", "onsite"];
@@ -69,12 +73,12 @@ export function Settings() {
 
   const handleClearJobs = async () => {
     if (confirm("This will delete all job listings. Continue?")) {
-      await invoke("clear_jobs");
+      await invoke("delete_all_jobs");
     }
   };
 
   const handleExport = async () => {
-    await invoke("export_data");
+    await invoke("export_applications_csv");
   };
 
   if (isLoading) {
@@ -316,6 +320,50 @@ export function Settings() {
                 <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>
               ))}
             </select>
+          </SettingField>
+        </div>
+      </Section>
+
+      {/* AI Filtering */}
+      <Section icon={<Sparkles className="h-4 w-4" />} title="AI Filtering">
+        <div className="space-y-4">
+          <label className="flex items-center justify-between">
+            <div>
+              <span className="text-sm text-gray-700">Enable AI Filtering</span>
+              <p className="text-xs text-gray-500">Use Claude to score job relevance during scans (requires Anthropic API key)</p>
+            </div>
+            <button
+              onClick={() => toggle("ai_filter_enabled")}
+              className={`relative h-6 w-11 rounded-full transition-colors ${
+                local["ai_filter_enabled"] === "true" ? "bg-blue-600" : "bg-gray-300"
+              }`}
+            >
+              <span
+                className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                  local["ai_filter_enabled"] === "true" ? "translate-x-5" : ""
+                }`}
+              />
+            </button>
+          </label>
+
+          <SettingField label={`Minimum Score Threshold: ${local["ai_filter_threshold"] ?? "40"}`}>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={local["ai_filter_threshold"] ?? "40"}
+              onChange={(e) => {
+                set("ai_filter_threshold", e.target.value);
+                save.mutate({ key: "ai_filter_threshold", value: e.target.value });
+              }}
+              className="w-full"
+            />
+            <div className="flex justify-between text-xs text-gray-400 mt-1">
+              <span>0 (keep all)</span>
+              <span>50 (balanced)</span>
+              <span>100 (strict)</span>
+            </div>
           </SettingField>
         </div>
       </Section>

@@ -1,16 +1,27 @@
 use crate::db::jobs::{self, JobFilters, JobRow};
+use crate::filtering::pipeline::{self, PipelineConfig, PipelineStats};
 use crate::sources::orchestrator::SourceOrchestrator;
-use crate::sources::SearchQuery;
+use crate::sources::RawJobListing;
 use crate::AppState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tauri::State;
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct SourceResult {
+    pub source: String,
+    pub found: u32,
+    pub new: u32,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ScanSummary {
     pub total_found: u32,
     pub new_inserted: u32,
     pub errors: Vec<String>,
+    pub source_results: Vec<SourceResult>,
+    pub pipeline_stats: Option<PipelineStats>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -35,47 +46,63 @@ fn load_settings_map(state: &State<AppState>) -> Result<HashMap<String, String>,
     Ok(map)
 }
 
-fn build_search_query(settings: &HashMap<String, String>) -> SearchQuery {
-    let keywords: Vec<String> = settings
-        .get("target_roles")
-        .and_then(|v| serde_json::from_str(v).ok())
-        .unwrap_or_else(|| vec!["software engineer".into()]);
+fn load_resume_data(state: &State<AppState>) -> (Vec<String>, String) {
+    let db = match state.db.lock() {
+        Ok(db) => db,
+        Err(_) => return (Vec::new(), String::new()),
+    };
 
-    let regions: Vec<String> = settings
-        .get("regions")
-        .and_then(|v| serde_json::from_str(v).ok())
-        .unwrap_or_else(|| vec!["Germany".into()]);
+    let resume = crate::db::resume::get_resume(&db.conn)
+        .ok()
+        .flatten();
 
-    SearchQuery {
-        keywords,
-        location: regions.first().cloned(),
-        remote_policy: settings.get("preferred_remote_policy").cloned(),
-        date_range_days: Some(7),
-        language: settings
-            .get("languages")
-            .and_then(|v| serde_json::from_str::<Vec<String>>(v).ok())
-            .and_then(|v| v.first().cloned()),
-        page: 1,
-        per_page: 20,
+    match resume {
+        Some(r) => {
+            let parsed: Option<crate::commands::resume::ParsedResume> = r
+                .parsed_json
+                .as_deref()
+                .and_then(|j| serde_json::from_str(j).ok());
+
+            match parsed {
+                Some(p) => {
+                    let experience_summary = p
+                        .experience
+                        .iter()
+                        .map(|e| format!("{} at {}", e.title, e.company))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    (p.skills, experience_summary)
+                }
+                None => (Vec::new(), String::new()),
+            }
+        }
+        None => (Vec::new(), String::new()),
     }
 }
 
 #[tauri::command]
 pub async fn scan_jobs(
     state: State<'_, AppState>,
-    _sources: Option<Vec<String>>,
+    sources: Option<Vec<String>>,
 ) -> Result<ScanSummary, String> {
+    let _ = sources;
     let settings = load_settings_map(&state)?;
-    let query = build_search_query(&settings);
+
+    // Create scan session
+    let scan_id = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        jobs::create_scan(&db.conn).map_err(|e| e.to_string())?
+    };
+
     let orchestrator = SourceOrchestrator::new(&settings);
 
-    let results = orchestrator.scan_all(&query).await;
+    // Fetch from all sources concurrently with per-source optimized queries
+    let results = orchestrator.scan_all_concurrent().await;
 
     let mut total_found: u32 = 0;
-    let mut new_inserted: u32 = 0;
     let mut errors: Vec<String> = Vec::new();
-
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let mut source_results: Vec<SourceResult> = Vec::new();
+    let mut all_jobs: Vec<RawJobListing> = Vec::new();
 
     for (scan_result, job_listings) in &results {
         total_found += scan_result.jobs_found;
@@ -84,31 +111,107 @@ pub async fn scan_jobs(
             errors.push(format!("{}: {}", scan_result.source, err));
         }
 
-        let mut source_new = 0u32;
-        for job in job_listings {
-            match jobs::insert_job(&db.conn, job) {
-                Ok(true) => {
-                    source_new += 1;
-                    new_inserted += 1;
-                }
-                Ok(false) => {} // Duplicate
-                Err(e) => {
-                    errors.push(format!("Insert error: {}", e));
+        source_results.push(SourceResult {
+            source: scan_result.source.clone(),
+            found: scan_result.jobs_found,
+            new: 0, // Will be updated after pipeline
+            error: scan_result.error.clone(),
+        });
+
+        all_jobs.extend(job_listings.iter().cloned());
+    }
+
+    // Load resume data for filtering
+    let (skills, experience_summary) = load_resume_data(&state);
+
+    // Load existing dedup hashes for in-memory dedup
+    let existing_hashes = {
+        let db = state.db.lock().map_err(|e| e.to_string())?;
+        jobs::get_all_dedup_hashes(&db.conn).map_err(|e| e.to_string())?
+    };
+
+    // Build pipeline config
+    let pipeline_config =
+        PipelineConfig::from_settings(&settings, skills, experience_summary, existing_hashes);
+
+    // Run the filtering pipeline
+    let (scored_jobs, mut pipeline_stats) =
+        pipeline::run_pipeline(all_jobs, &pipeline_config).await;
+
+    // Insert surviving jobs into DB
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let mut new_inserted: u32 = 0;
+
+    for scored_job in &scored_jobs {
+        let inserted = if scored_job.score > 0.0 {
+            jobs::insert_job_with_score(
+                &db.conn,
+                &scored_job.job,
+                scored_job.score,
+                scored_job.match_reason.as_deref(),
+                scored_job.parsed_info.as_deref(),
+            )
+        } else {
+            jobs::insert_job(&db.conn, &scored_job.job)
+        };
+
+        match inserted {
+            Ok(true) => {
+                new_inserted += 1;
+                // Update per-source counts
+                if let Some(sr) = source_results
+                    .iter_mut()
+                    .find(|sr| sr.source == scored_job.job.source)
+                {
+                    sr.new += 1;
                 }
             }
+            Ok(false) => {} // Duplicate
+            Err(e) => {
+                errors.push(format!("Insert error: {}", e));
+            }
         }
+    }
 
-        jobs::insert_scan_log(
+    pipeline_stats.inserted = new_inserted;
+
+    // Log per-source results with scan session
+    for sr in &source_results {
+        jobs::insert_scan_log_with_session(
             &db.conn,
-            &scan_result.source,
-            scan_result.jobs_found,
-            source_new,
-            scan_result.error.as_deref(),
+            scan_id,
+            &sr.source,
+            sr.found,
+            sr.new,
+            sr.error.as_deref(),
         )
         .ok();
     }
 
-    // Score new jobs if resume exists
+    // Complete the scan session
+    let stats_json = serde_json::to_string(&pipeline_stats).ok();
+    let errors_json = if errors.is_empty() {
+        None
+    } else {
+        serde_json::to_string(&errors).ok()
+    };
+    let status = if errors.is_empty() {
+        "completed"
+    } else {
+        "completed"
+    };
+    jobs::complete_scan(
+        &db.conn,
+        scan_id,
+        total_found,
+        new_inserted,
+        stats_json.as_deref(),
+        errors_json.as_deref(),
+        status,
+    )
+    .ok();
+
+    // Score unscored jobs (for those inserted without AI score)
     drop(db);
     score_unscored_jobs(&state).ok();
 
@@ -116,6 +219,8 @@ pub async fn scan_jobs(
         total_found,
         new_inserted,
         errors,
+        source_results,
+        pipeline_stats: Some(pipeline_stats),
     })
 }
 
@@ -175,10 +280,10 @@ fn score_unscored_jobs(state: &State<AppState>) -> Result<u32, String> {
             .unwrap_or_else(|| "B1".into()),
     };
 
-    // Get unscored jobs (score = 0.0)
+    // Only score jobs not yet scored by AI
     let mut stmt = db
         .conn
-        .prepare("SELECT id, title, company, location, remote_policy, description, url, apply_url, source, language, german_level_required, posted_at, fetched_at, relevance_score, dedup_hash FROM jobs WHERE relevance_score = 0.0 OR relevance_score IS NULL")
+        .prepare("SELECT id, title, company, location, remote_policy, description, url, apply_url, source, language, german_level_required, posted_at, fetched_at, relevance_score, dedup_hash, match_reason, ai_scored, parsed_info FROM jobs WHERE (ai_scored = 0 OR ai_scored IS NULL) AND (relevance_score = 0.0 OR relevance_score IS NULL)")
         .map_err(|e| e.to_string())?;
     let unscored: Vec<JobRow> = stmt
         .query_map([], |row| {
@@ -198,6 +303,9 @@ fn score_unscored_jobs(state: &State<AppState>) -> Result<u32, String> {
                 fetched_at: row.get(12)?,
                 relevance_score: row.get(13)?,
                 dedup_hash: row.get(14)?,
+                match_reason: row.get(15)?,
+                ai_scored: row.get(16)?,
+                parsed_info: row.get(17)?,
             })
         })
         .map_err(|e| e.to_string())?

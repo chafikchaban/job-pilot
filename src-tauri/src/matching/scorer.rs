@@ -38,7 +38,7 @@ fn normalize_skill(skill: &str) -> String {
         .unwrap_or(lower)
 }
 
-fn compute_skill_overlap(description: &Option<String>, skills: &[String]) -> f64 {
+pub fn compute_skill_overlap(description: &Option<String>, skills: &[String]) -> f64 {
     if skills.is_empty() {
         return 0.0;
     }
@@ -56,7 +56,7 @@ fn compute_skill_overlap(description: &Option<String>, skills: &[String]) -> f64
     matches as f64 / skills.len() as f64
 }
 
-fn compute_role_match(title: &str, target_roles: &[String]) -> f64 {
+pub fn compute_role_match(title: &str, target_roles: &[String]) -> f64 {
     if target_roles.is_empty() {
         return 0.0;
     }
@@ -171,7 +171,7 @@ pub fn score_job(job: &JobRow, resume: &ParsedResume, prefs: &UserPreferences) -
 
     MatchResult {
         job_id: job.id,
-        total_score: total,
+        total_score: (total * 100.0).round(),
         skill_score,
         role_score,
         location_score,

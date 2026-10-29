@@ -5,6 +5,7 @@ import {
   ClipboardList,
   FileText,
   Mail,
+  History,
   Settings,
 } from "lucide-react";
 
@@ -14,6 +15,7 @@ const navItems = [
   { to: "/applications", icon: ClipboardList, label: "Applications" },
   { to: "/resume", icon: FileText, label: "Resume" },
   { to: "/cover-letters", icon: Mail, label: "Cover Letters" },
+  { to: "/scans", icon: History, label: "Scans" },
   { to: "/settings", icon: Settings, label: "Settings" },
 ];
 

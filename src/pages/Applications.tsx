@@ -1,4 +1,5 @@
 import { useState, type DragEvent } from "react";
+import { openExternal } from "../lib/tauri";
 import {
   GripVertical,
   ExternalLink,
@@ -165,14 +166,12 @@ function DetailPanel({
             <span className="font-medium text-gray-600 w-28">Notes:</span>
             <span className="text-gray-700">{app.notes || "None"}</span>
           </div>
-          <a
-            href={app.job_url}
-            target="_blank"
-            rel="noreferrer"
+          <button
+            onClick={() => openExternal(app.job_url)}
             className="inline-flex items-center gap-1 text-blue-600 hover:underline"
           >
             View Listing <ExternalLink className="h-4 w-4" />
-          </a>
+          </button>
         </div>
       </div>
     </div>

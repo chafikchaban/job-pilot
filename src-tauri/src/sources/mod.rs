@@ -8,10 +8,11 @@ pub mod stepstone;
 pub mod brave_search;
 pub mod search_templates;
 pub mod orchestrator;
-
+pub mod query_builder;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SourceType {
@@ -71,6 +72,23 @@ impl RawJobListing {
         let hash = Sha256::digest(input.as_bytes());
         hex::encode(hash)
     }
+}
+
+/// Resolve a scraper script path relative to the project root.
+/// CARGO_MANIFEST_DIR is src-tauri/ at compile time; scripts live one level up.
+pub fn resolve_script_path(script_name: &str) -> PathBuf {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let project_root = manifest.parent().unwrap_or(manifest);
+    project_root.join("scripts").join(script_name)
+}
+
+/// Build a shared HTTP client with proper User-Agent header.
+/// Some APIs (The Muse, Remotive) return 403 without a User-Agent.
+pub fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("JobPilot/0.1 (Desktop App)")
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 #[async_trait]

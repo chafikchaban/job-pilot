@@ -1,6 +1,8 @@
 use super::{JobSource, RawJobListing, SearchQuery, SourceType};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use std::collections::HashSet;
 
 pub struct ArbeitnowSource {
     client: reqwest::Client,
@@ -20,13 +22,33 @@ struct ArbeitnowJob {
     description: Option<String>,
     url: Option<String>,
     remote: Option<bool>,
-    created_at: Option<String>,
+    created_at: Option<i64>,
+}
+
+/// Extract individual search words from keywords for word-level matching.
+/// e.g. ["Senior Frontend Engineer", "React Native Developer"]
+///   -> ["frontend", "engineer", "react", "native", "developer"]
+fn extract_search_words(keywords: &[String]) -> Vec<String> {
+    let stop_words: HashSet<&str> =
+        ["senior", "junior", "lead", "staff", "principal", "mid", "level", "full-stack", "and", "the", "for"]
+            .iter()
+            .copied()
+            .collect();
+
+    keywords
+        .iter()
+        .flat_map(|k| k.split_whitespace())
+        .map(|w| w.to_lowercase())
+        .filter(|w| w.len() > 2 && !stop_words.contains(w.as_str()))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 impl ArbeitnowSource {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: super::http_client(),
         }
     }
 }
@@ -57,21 +79,26 @@ impl JobSource for ArbeitnowSource {
             .json::<ArbeitnowResponse>()
             .await?;
 
-        let keywords_lower: Vec<String> = query.keywords.iter().map(|k| k.to_lowercase()).collect();
+        // Split role titles into individual words for matching
+        let search_words = extract_search_words(&query.keywords);
 
         let jobs = resp
             .data
             .into_iter()
             .filter(|j| {
+                if search_words.is_empty() {
+                    return true;
+                }
                 let title_lower = j.title.to_lowercase();
                 let desc_lower = j
                     .description
                     .as_deref()
                     .unwrap_or("")
                     .to_lowercase();
-                keywords_lower
+                // Match if ANY individual word appears in title or description
+                search_words
                     .iter()
-                    .any(|k| title_lower.contains(k) || desc_lower.contains(k))
+                    .any(|w| title_lower.contains(w) || desc_lower.contains(w))
             })
             .take(query.per_page as usize)
             .map(|j| {
@@ -94,7 +121,10 @@ impl JobSource for ArbeitnowSource {
                     apply_url: None,
                     source: "arbeitnow".into(),
                     language: Some("de".into()),
-                    posted_at: j.created_at,
+                    posted_at: j.created_at.and_then(|ts| {
+                        DateTime::<Utc>::from_timestamp(ts, 0)
+                            .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+                    }),
                     raw_json: None,
                 }
             })

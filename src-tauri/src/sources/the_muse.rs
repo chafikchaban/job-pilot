@@ -1,6 +1,7 @@
 use super::{JobSource, RawJobListing, SearchQuery, SourceType};
 use async_trait::async_trait;
 use serde::Deserialize;
+use std::collections::HashSet;
 
 pub struct TheMuseSource {
     client: reqwest::Client,
@@ -36,10 +37,73 @@ struct MuseRefs {
     landing_page: Option<String>,
 }
 
+/// The Muse API uses fixed category names, not free-text search.
+/// Map common role keywords to Muse categories.
+fn keywords_to_muse_categories(keywords: &[String]) -> Vec<&'static str> {
+    let joined = keywords.join(" ").to_lowercase();
+    let mut categories = Vec::new();
+
+    // Always include Software Engineering for dev roles
+    if joined.contains("engineer")
+        || joined.contains("developer")
+        || joined.contains("frontend")
+        || joined.contains("backend")
+        || joined.contains("full-stack")
+        || joined.contains("fullstack")
+        || joined.contains("software")
+        || joined.contains("react")
+        || joined.contains("typescript")
+    {
+        categories.push("Software Engineering");
+    }
+
+    if joined.contains("data") || joined.contains("analytics") || joined.contains("machine learning") {
+        categories.push("Data and Analytics");
+    }
+
+    if joined.contains("design") || joined.contains("ux") || joined.contains("ui") {
+        categories.push("Design and UX");
+    }
+
+    if joined.contains("product") || joined.contains("manager") {
+        categories.push("Product");
+    }
+
+    if joined.contains("devops") || joined.contains("infrastructure") || joined.contains("cloud") {
+        categories.push("Software Engineering");
+    }
+
+    // Deduplicate
+    categories.sort();
+    categories.dedup();
+
+    // Fallback: if no category matched, use Software Engineering
+    if categories.is_empty() {
+        categories.push("Software Engineering");
+    }
+
+    categories
+}
+
+/// Extract individual search words from keywords for client-side filtering.
+fn extract_search_words(keywords: &[String]) -> Vec<String> {
+    let stop_words: HashSet<&str> =
+        ["senior", "junior", "lead", "staff", "principal", "mid", "level"].iter().copied().collect();
+
+    keywords
+        .iter()
+        .flat_map(|k| k.split_whitespace())
+        .map(|w| w.to_lowercase())
+        .filter(|w| w.len() > 2 && !stop_words.contains(w.as_str()))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 impl TheMuseSource {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: super::http_client(),
         }
     }
 }
@@ -61,23 +125,45 @@ impl JobSource for TheMuseSource {
         query: &SearchQuery,
     ) -> Result<Vec<RawJobListing>, Box<dyn std::error::Error + Send + Sync>> {
         let url = "https://www.themuse.com/api/public/jobs";
-        let keywords = query.keywords.join(" ");
+        let categories = keywords_to_muse_categories(&query.keywords);
+        let search_words = extract_search_words(&query.keywords);
+
+        // Build query params — The Muse supports multiple category params
+        let mut params: Vec<(&str, String)> = vec![
+            ("page", query.page.to_string()),
+        ];
+        for cat in &categories {
+            params.push(("category", cat.to_string()));
+        }
 
         let resp = self
             .client
             .get(url)
-            .query(&[
-                ("page", &query.page.to_string()),
-                ("category", &keywords),
-            ])
+            .query(&params)
             .send()
             .await?
             .json::<MuseResponse>()
             .await?;
 
-        let jobs = resp
+        let jobs: Vec<RawJobListing> = resp
             .results
             .into_iter()
+            .filter(|j| {
+                // Client-side filter: job title or description must contain at least one keyword word
+                if search_words.is_empty() {
+                    return true;
+                }
+                let title_lower = j.name.to_lowercase();
+                let desc_lower = j
+                    .contents
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase();
+                search_words
+                    .iter()
+                    .any(|w| title_lower.contains(w) || desc_lower.contains(w))
+            })
+            .take(query.per_page as usize)
             .map(|j| {
                 let location = j.locations.first().map(|l| l.name.clone());
                 let url = j

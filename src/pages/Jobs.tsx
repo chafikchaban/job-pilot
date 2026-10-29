@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   Search,
   SlidersHorizontal,
@@ -8,13 +8,18 @@ import {
   ExternalLink,
   MapPin,
   Building2,
+  Calendar,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
 import { useJobs, useScanJobs } from "../hooks/useJobs";
+import { useResume } from "../hooks/useResume";
+import { JobDetailModal } from "../components/JobDetailModal";
+import { formatPostedDate } from "../lib/job-parser";
+import { openExternal } from "../lib/tauri";
 import type { Job, JobFilters } from "../lib/types";
 
-const SOURCES = ["adzuna", "linkedin", "stepstone", "jsearch", "brave"];
+const SOURCES = ["adzuna", "themuse", "remotive", "arbeitnow", "jsearch", "linkedin", "stepstone", "brave_search"];
 const REMOTE_OPTIONS = ["remote", "hybrid", "onsite"] as const;
 const SORT_OPTIONS = [
   { value: "relevance_score", label: "Relevance" },
@@ -31,6 +36,7 @@ export function Jobs() {
   const [sortBy, setSortBy] = useState("relevance_score");
   const [page, setPage] = useState(1);
   const [viewMode, setViewMode] = useState<"card" | "table">("card");
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
 
   const filters: JobFilters = {
     search: search || undefined,
@@ -45,6 +51,17 @@ export function Jobs() {
 
   const { data: jobs = [], isLoading } = useJobs(filters);
   const scan = useScanJobs();
+  const { data: resume } = useResume();
+
+  const userSkills = useMemo(() => {
+    if (!resume?.parsed_json) return [];
+    try {
+      const parsed = JSON.parse(resume.parsed_json);
+      return (parsed.skills as string[]) ?? [];
+    } catch {
+      return [];
+    }
+  }, [resume?.parsed_json]);
 
   const toggleSource = (s: string) =>
     setSelectedSources((prev) =>
@@ -168,11 +185,11 @@ export function Jobs() {
       ) : viewMode === "card" ? (
         <div className="grid grid-cols-2 gap-4">
           {jobs.map((job) => (
-            <JobCard key={job.id} job={job} />
+            <JobCard key={job.id} job={job} onClick={() => setSelectedJob(job)} />
           ))}
         </div>
       ) : (
-        <JobTable jobs={jobs} />
+        <JobTable jobs={jobs} onSelect={setSelectedJob} />
       )}
 
       {jobs.length === 0 && !isLoading && (
@@ -197,14 +214,27 @@ export function Jobs() {
           Next <ChevronRight className="h-4 w-4" />
         </button>
       </div>
+
+      {/* Job Detail Modal */}
+      {selectedJob && (
+        <JobDetailModal
+          job={selectedJob}
+          userSkills={userSkills}
+          onClose={() => setSelectedJob(null)}
+        />
+      )}
     </div>
   );
 }
 
-function JobCard({ job }: { job: Job }) {
+function JobCard({ job, onClick }: { job: Job; onClick: () => void }) {
   const score = job.relevance_score ?? 0;
+  const posted = formatPostedDate(job.posted_at);
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 transition hover:shadow-md">
+    <div
+      onClick={onClick}
+      className="cursor-pointer rounded-xl border border-gray-200 bg-white p-4 transition hover:shadow-md"
+    >
       <div className="mb-2 flex items-start justify-between">
         <h3 className="font-semibold text-gray-900 leading-tight">{job.title}</h3>
         <span className={`ml-2 shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
@@ -220,27 +250,33 @@ function JobCard({ job }: { job: Job }) {
         {job.location && (
           <span className="flex items-center gap-1"><MapPin className="h-3 w-3" />{job.location}</span>
         )}
+        {posted.relative && (
+          <span className="flex items-center gap-1"><Calendar className="h-3 w-3" />{posted.full}</span>
+        )}
         {job.remote_policy && (
           <span className="rounded-full bg-blue-50 px-2 py-0.5 text-blue-600">{job.remote_policy}</span>
         )}
         <span className="rounded-full bg-gray-100 px-2 py-0.5">{job.source}</span>
       </div>
-      {job.description && (
+      {job.match_reason && (
+        <p className="mb-2 rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">
+          {job.match_reason}
+        </p>
+      )}
+      {!job.match_reason && job.description && (
         <p className="mb-3 line-clamp-2 text-xs text-gray-500">{job.description}</p>
       )}
-      <a
-        href={job.url}
-        target="_blank"
-        rel="noreferrer"
+      <button
+        onClick={(e) => { e.stopPropagation(); openExternal(job.url); }}
         className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:underline"
       >
         View Listing <ExternalLink className="h-3 w-3" />
-      </a>
+      </button>
     </div>
   );
 }
 
-function JobTable({ jobs }: { jobs: Job[] }) {
+function JobTable({ jobs, onSelect }: { jobs: Job[]; onSelect: (job: Job) => void }) {
   return (
     <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
       <table className="w-full text-sm">
@@ -249,6 +285,7 @@ function JobTable({ jobs }: { jobs: Job[] }) {
             <th className="px-4 py-2 font-medium">Title</th>
             <th className="px-4 py-2 font-medium">Company</th>
             <th className="px-4 py-2 font-medium">Location</th>
+            <th className="px-4 py-2 font-medium">Published</th>
             <th className="px-4 py-2 font-medium">Remote</th>
             <th className="px-4 py-2 font-medium">Source</th>
             <th className="px-4 py-2 font-medium">Score</th>
@@ -256,21 +293,41 @@ function JobTable({ jobs }: { jobs: Job[] }) {
           </tr>
         </thead>
         <tbody>
-          {jobs.map((job) => (
-            <tr key={job.id} className="border-b border-gray-100 hover:bg-gray-50">
-              <td className="px-4 py-2 font-medium text-gray-900">{job.title}</td>
-              <td className="px-4 py-2 text-gray-600">{job.company ?? "--"}</td>
-              <td className="px-4 py-2 text-gray-600">{job.location ?? "--"}</td>
-              <td className="px-4 py-2">{job.remote_policy ?? "--"}</td>
-              <td className="px-4 py-2">{job.source}</td>
-              <td className="px-4 py-2">{(job.relevance_score ?? 0).toFixed(0)}%</td>
-              <td className="px-4 py-2">
-                <a href={job.url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
-                  <ExternalLink className="h-4 w-4" />
-                </a>
-              </td>
-            </tr>
-          ))}
+          {jobs.map((job) => {
+            const posted = formatPostedDate(job.posted_at);
+            return (
+              <tr
+                key={job.id}
+                onClick={() => onSelect(job)}
+                className="cursor-pointer border-b border-gray-100 hover:bg-gray-50"
+              >
+                <td className="px-4 py-2 font-medium text-gray-900">{job.title}</td>
+                <td className="px-4 py-2 text-gray-600">{job.company ?? "--"}</td>
+                <td className="px-4 py-2 text-gray-600">{job.location ?? "--"}</td>
+                <td className="px-4 py-2 text-gray-500">
+                  {posted.relative ? (
+                    <span>
+                      <span className="text-gray-400">({posted.relative})</span>{" "}
+                      {posted.absolute}
+                    </span>
+                  ) : (
+                    "--"
+                  )}
+                </td>
+                <td className="px-4 py-2">{job.remote_policy ?? "--"}</td>
+                <td className="px-4 py-2">{job.source}</td>
+                <td className="px-4 py-2">{(job.relevance_score ?? 0).toFixed(0)}%</td>
+                <td className="px-4 py-2">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); openExternal(job.url); }}
+                    className="text-blue-600 hover:underline"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

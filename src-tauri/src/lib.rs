@@ -5,6 +5,7 @@ mod matching;
 mod cover_letter;
 mod scheduler;
 mod mcp;
+mod filtering;
 
 use std::sync::Mutex;
 use db::Database;
@@ -33,6 +34,7 @@ pub fn run() {
             // Resume
             commands::resume::upload_resume,
             commands::resume::get_resume,
+            commands::resume::reparse_resume,
             commands::resume::update_resume_parsed,
             commands::resume::delete_resume,
             // Jobs
@@ -59,6 +61,7 @@ pub fn run() {
             commands::scheduler::stop_scheduler,
             commands::scheduler::get_scheduler_status,
             commands::scheduler::get_scan_history,
+            commands::scheduler::get_scans,
             // Web Search
             commands::web_search::run_web_search,
             // Export & Analytics

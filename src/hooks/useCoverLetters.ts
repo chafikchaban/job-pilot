@@ -6,7 +6,7 @@ export function useCoverLetters(jobId?: number | null) {
   return useQuery<CoverLetterData[]>({
     queryKey: ["cover_letters", jobId],
     queryFn: () =>
-      invoke<CoverLetterData[]>("get_cover_letters", { jobId: jobId ?? null }),
+      invoke<CoverLetterData[]>("get_cover_letters", { job_id: jobId ?? null }),
   });
 }
 
@@ -18,7 +18,7 @@ export function useGenerateCoverLetter() {
     { jobId: number; language: string; tone: string }
   >({
     mutationFn: ({ jobId, language, tone }) =>
-      invoke<CoverLetterData>("generate_cover_letter", { jobId, language, tone }),
+      invoke<CoverLetterData>("generate_cover_letter", { job_id: jobId, language, tone }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["cover_letters"] });
     },

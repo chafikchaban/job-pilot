@@ -7,6 +7,7 @@ import { Applications } from "./pages/Applications";
 import { Resume } from "./pages/Resume";
 import { CoverLetters } from "./pages/CoverLetters";
 import { Settings } from "./pages/Settings";
+import { Scans } from "./pages/Scans";
 
 const queryClient = new QueryClient();
 
@@ -23,6 +24,7 @@ export default function App() {
               <Route path="/applications" element={<Applications />} />
               <Route path="/resume" element={<Resume />} />
               <Route path="/cover-letters" element={<CoverLetters />} />
+              <Route path="/scans" element={<Scans />} />
               <Route path="/settings" element={<Settings />} />
             </Routes>
           </main>

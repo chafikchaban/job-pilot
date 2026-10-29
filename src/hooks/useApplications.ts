@@ -6,7 +6,7 @@ export function useApplications(statusFilter?: string | null) {
   return useQuery<ApplicationWithJob[]>({
     queryKey: ["applications", statusFilter],
     queryFn: () =>
-      invoke<ApplicationWithJob[]>("get_applications", { statusFilter: statusFilter ?? null }),
+      invoke<ApplicationWithJob[]>("get_applications", { status_filter: statusFilter ?? null }),
   });
 }
 
@@ -14,7 +14,7 @@ export function useCreateApplication() {
   const qc = useQueryClient();
   return useMutation<void, string, { jobId: number; status?: string }>({
     mutationFn: ({ jobId, status }) =>
-      invoke("create_application", { jobId, status: status ?? "interested" }),
+      invoke("create_application", { job_id: jobId, status: status ?? "interested" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["applications"] });
       qc.invalidateQueries({ queryKey: ["analytics"] });
@@ -50,7 +50,7 @@ export function useApplicationStats() {
     queryKey: ["application_stats"],
     queryFn: async () => {
       const apps = await invoke<ApplicationWithJob[]>("get_applications", {
-        statusFilter: null,
+        status_filter: null,
       });
       const counts: Record<string, number> = {};
       for (const a of apps) {

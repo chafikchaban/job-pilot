@@ -28,6 +28,15 @@ impl JobSource for StepstoneSource {
         &self,
         query: &SearchQuery,
     ) -> Result<Vec<RawJobListing>, Box<dyn std::error::Error + Send + Sync>> {
+        let script_path = super::resolve_script_path("stepstone-scraper.js");
+        if !script_path.exists() {
+            return Err(
+                "Stepstone scraper not available: scripts/stepstone-scraper.js not found. \
+                 Install Playwright and set up the scraper scripts to enable Stepstone scanning."
+                    .into(),
+            );
+        }
+
         let input = serde_json::json!({
             "keywords": query.keywords,
             "location": query.location,
@@ -36,11 +45,18 @@ impl JobSource for StepstoneSource {
         });
 
         let mut child = Command::new("node")
-            .arg("scripts/stepstone-scraper.js")
+            .arg(&script_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()?;
+            .spawn()
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                format!(
+                    "Failed to start Stepstone scraper (is Node.js installed?): {}",
+                    e
+                )
+                .into()
+            })?;
 
         if let Some(mut stdin) = child.stdin.take() {
             stdin
@@ -48,11 +64,33 @@ impl JobSource for StepstoneSource {
                 .await?;
         }
 
+        // Stream stderr in real-time for progress visibility
+        let stderr_handle = child.stderr.take();
+        let stderr_task = tokio::spawn(async move {
+            if let Some(stderr) = stderr_handle {
+                use tokio::io::{AsyncBufReadExt, BufReader};
+                let reader = BufReader::new(stderr);
+                let mut lines = reader.lines();
+                let mut all_stderr = String::new();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    eprintln!("[scan] {}", line);
+                    all_stderr.push_str(&line);
+                    all_stderr.push('\n');
+                }
+                all_stderr
+            } else {
+                String::new()
+            }
+        });
+
         let output = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
+            std::time::Duration::from_secs(300),
             child.wait_with_output(),
         )
         .await??;
+
+        // Wait for stderr streaming to finish
+        let _ = stderr_task.await;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
