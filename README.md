@@ -12,6 +12,20 @@ A desktop app (Tauri v2 + React + TypeScript) that automates job search for the 
 - **Cover letters** — tailored English or German letters generated with Claude.
 - **Scheduled scans, web search augmentation, CSV/JSON export, analytics, and an optional MCP server.**
 
+## Screenshots
+
+**Scan** — filters, live progress, and history of past scans
+
+![Scan page](docs/screenshots/scan.png)
+
+**Job detail** — AI match score, reason, and skill breakdown against your resume
+
+![Job detail](docs/screenshots/job-detail.png)
+
+**Cover letters** — generate tailored English or German letters per job
+
+![Cover letters](docs/screenshots/cover-letters.png)
+
 ## Requirements
 
 - [Rust](https://rustup.rs) (stable) and the [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/)
