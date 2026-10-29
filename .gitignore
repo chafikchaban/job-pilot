@@ -1,0 +1,9 @@
+node_modules/
+dist/
+src-tauri/target/
+*.db
+*.sqlite
+.DS_Store
+*.log
+.planning/
+PLAN.md

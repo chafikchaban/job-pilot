@@ -1,0 +1,35 @@
+{
+  "name": "jobpilot",
+  "version": "1.0.0",
+  "description": "MCP server for JobPilot — query jobs, trigger scans, manage applications",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3100
+  },
+  "capabilities": {
+    "query_jobs": {
+      "description": "Search and filter job listings from the database",
+      "parameters": {
+        "search": { "type": "string", "description": "Text search query" },
+        "source": { "type": "string", "description": "Filter by source (adzuna, linkedin, etc.)" },
+        "remote_policy": { "type": "string", "description": "Filter by remote policy" },
+        "min_relevance": { "type": "number", "description": "Minimum relevance score (0-100)" },
+        "limit": { "type": "number", "description": "Max results to return", "default": 20 }
+      }
+    },
+    "get_applications": {
+      "description": "List application tracking entries",
+      "parameters": {
+        "status": { "type": "string", "description": "Filter by status (interested, applied, interview, offer, rejected, withdrawn)" }
+      }
+    },
+    "get_analytics": {
+      "description": "Get analytics summary (application stats, scan history, source distribution)",
+      "parameters": {}
+    },
+    "get_resume": {
+      "description": "Get the stored resume data (parsed skills, experience, education)",
+      "parameters": {}
+    }
+  }
+}
